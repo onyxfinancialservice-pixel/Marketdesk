@@ -13,6 +13,7 @@ Set these values in Netlify under Site settings -> Environment variables:
 | --- | --- | --- |
 | `REACT_APP_SUPABASE_URL` | Builds | Supabase project URL |
 | `REACT_APP_SUPABASE_ANON_KEY` | Builds | Public anon key used by React |
+| `TWELVE_DATA_API_KEY` | Functions | Server-only key for Forex, indices, and market-data fallback |
 
 The service role key is not required for this Netlify Functions version because
 the app uses Supabase RLS from the browser with the anon key.
@@ -68,5 +69,6 @@ Also add preview/custom domains under Redirect URLs if you use them.
 
 - `REACT_APP_SUPABASE_ANON_KEY` is public by design.
 - `SUPABASE_SERVICE_ROLE_KEY` is not needed for this build.
+- `TWELVE_DATA_API_KEY` must stay server-side only.
 - `ANTHROPIC_API_KEY` or `EMERGENT_LLM_KEY` belongs only in Netlify function env.
 - Do not commit `.env`, `.env.local`, or Netlify `.netlify/` folders.

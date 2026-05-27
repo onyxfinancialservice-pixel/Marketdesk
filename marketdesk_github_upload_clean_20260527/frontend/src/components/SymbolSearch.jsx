@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Search, X } from "lucide-react";
-import { POPULAR_CRYPTO } from "@/lib/market";
+import { POPULAR_CRYPTO, POPULAR_FOREX, POPULAR_INDICES, getMarketLabel, getMarketType } from "@/lib/market";
 import { useNavigate } from "react-router-dom";
 
 export default function SymbolSearch({ placeholder = "Search symbol (e.g. BTC, ETH, SOL)…", autoFocus, onPick }) {
@@ -20,10 +20,13 @@ export default function SymbolSearch({ placeholder = "Search symbol (e.g. BTC, E
   const term = q.trim().toUpperCase();
   const matches = (() => {
     if (!term) return POPULAR_CRYPTO.slice(0, 8);
-    const fromList = POPULAR_CRYPTO.filter((s) => s.includes(term));
-    const synthetic = term.endsWith("USDT") ? term : `${term}USDT`;
-    if (!fromList.includes(synthetic)) return [synthetic, ...fromList].slice(0, 8);
-    return fromList.slice(0, 8);
+    const universe = [...POPULAR_CRYPTO, ...POPULAR_FOREX, ...POPULAR_INDICES];
+    const fromList = universe.filter((s) => s.includes(term));
+    const synthetic = getMarketType(term) === "crypto" && !term.endsWith("USDT") ? `${term}USDT` : term;
+    const ordered = fromList.some((s) => getMarketType(s) !== "crypto")
+      ? [...fromList, synthetic]
+      : [synthetic, ...fromList];
+    return [...new Set(ordered)].slice(0, 8);
   })();
 
   const pick = (sym) => {
@@ -67,7 +70,7 @@ export default function SymbolSearch({ placeholder = "Search symbol (e.g. BTC, E
               className="w-full flex items-center gap-3 px-4 py-2.5 text-left text-sm hover:bg-zinc-50 transition-colors"
             >
               <span className="font-semibold tabular-nums text-zinc-950">{s}</span>
-              <span className="text-xs text-zinc-500">Binance</span>
+              <span className="text-xs text-zinc-500">{getMarketLabel(s)}</span>
             </button>
           ))}
         </div>

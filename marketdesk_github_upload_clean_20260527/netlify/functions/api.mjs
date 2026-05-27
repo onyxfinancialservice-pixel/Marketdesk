@@ -1,7 +1,28 @@
 const OKX = "https://www.okx.com";
+const BINANCE = "https://api.binance.com";
 const COINPAPRIKA = "https://api.coinpaprika.com/v1";
 const COINGECKO = "https://api.coingecko.com/api/v3";
+const TWELVE = "https://api.twelvedata.com";
 const DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-5-20250929";
+const POPULAR_CRYPTO = [
+  "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
+  "ADAUSDT", "AVAXUSDT", "DOGEUSDT", "LINKUSDT", "MATICUSDT",
+  "DOTUSDT", "ARBUSDT", "OPUSDT", "INJUSDT", "SUIUSDT",
+];
+const FOREX_CODES = new Set(["USD", "EUR", "GBP", "JPY", "AUD", "NZD", "CAD", "CHF", "TRY", "CNH", "SEK", "NOK", "DKK", "MXN", "ZAR"]);
+const INDEX_ALIASES = new Map([
+  ["SPX", "SPX"],
+  ["SP500", "SPX"],
+  ["NDX", "NDX"],
+  ["NASDAQ100", "NDX"],
+  ["DJI", "DJI"],
+  ["DOW", "DJI"],
+  ["IXIC", "IXIC"],
+  ["RUT", "RUT"],
+  ["DAX", "DAX"],
+  ["FTSE", "FTSE"],
+  ["N225", "N225"],
+]);
 
 const getEnv = (name) => {
   if (globalThis.Netlify?.env?.get) {
@@ -85,6 +106,14 @@ const fetchJson = async (url, options = {}) => {
   return body;
 };
 
+const twelveKey = () => getEnv("TWELVE_DATA_API_KEY") || getEnv("TWELVEDATA_API_KEY");
+
+const requireTwelveKey = () => {
+  const key = twelveKey();
+  if (!key) throw httpError(502, "TWELVE_DATA_API_KEY is missing from Netlify environment variables");
+  return key;
+};
+
 const QUOTES = ["USDT", "USDC", "USD", "BTC", "ETH", "BNB", "EUR", "TRY", "BRL"];
 
 const toOkxSymbol = (symbol) => {
@@ -98,6 +127,39 @@ const toOkxSymbol = (symbol) => {
 };
 
 const fromOkxSymbol = (instId) => String(instId || "").replace(/-/g, "");
+
+const isForexSymbol = (symbol) => {
+  const clean = String(symbol || "").toUpperCase().replace(/[^A-Z]/g, "");
+  return clean.length === 6 && FOREX_CODES.has(clean.slice(0, 3)) && FOREX_CODES.has(clean.slice(3, 6));
+};
+
+const isIndexSymbol = (symbol) => INDEX_ALIASES.has(String(symbol || "").toUpperCase().replace(/[^A-Z0-9]/g, ""));
+
+const marketForSymbol = (symbol) => {
+  if (isForexSymbol(symbol)) return "forex";
+  if (isIndexSymbol(symbol)) return "index";
+  return "crypto";
+};
+
+const toTwelveSymbol = (symbol) => {
+  const raw = String(symbol || "").trim().toUpperCase();
+  if (raw.includes("/")) return raw;
+  const compact = raw.replace(/[^A-Z0-9]/g, "");
+  if (INDEX_ALIASES.has(compact)) return INDEX_ALIASES.get(compact);
+  if (isForexSymbol(compact)) return `${compact.slice(0, 3)}/${compact.slice(3, 6)}`;
+
+  for (const quote of ["USDT", "USDC", "USD"]) {
+    if (compact.endsWith(quote) && compact.length > quote.length) {
+      return `${compact.slice(0, -quote.length)}/USD`;
+    }
+  }
+  return compact;
+};
+
+const fromTwelveSymbol = (symbol, fallback) => {
+  if (fallback) return String(fallback).toUpperCase().replace(/[^A-Z0-9]/g, "");
+  return String(symbol || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+};
 
 const mapOkxInterval = (timeframe) => {
   const tf = String(timeframe || "1h").toLowerCase();
@@ -120,6 +182,25 @@ const mapOkxInterval = (timeframe) => {
   );
 };
 
+const mapTwelveInterval = (timeframe) => {
+  const tf = String(timeframe || "1h").toLowerCase();
+  return (
+    {
+      "1m": "1min",
+      "3m": "5min",
+      "5m": "5min",
+      "15m": "15min",
+      "30m": "30min",
+      "1h": "1h",
+      "2h": "2h",
+      "4h": "4h",
+      "1d": "1day",
+      "1w": "1week",
+      "1mo": "1month",
+    }[tf] || "1h"
+  );
+};
+
 const okxTickerToBinanceShape = (ticker) => {
   const last = Number(ticker.last || 0);
   const open24 = Number(ticker.open24h || 0);
@@ -136,52 +217,171 @@ const okxTickerToBinanceShape = (ticker) => {
   };
 };
 
+const binanceTickerToBinanceShape = (ticker) => ({
+  symbol: ticker.symbol,
+  lastPrice: String(ticker.lastPrice || 0),
+  openPrice: String(ticker.openPrice || 0),
+  highPrice: String(ticker.highPrice || 0),
+  lowPrice: String(ticker.lowPrice || 0),
+  volume: String(ticker.volume || 0),
+  quoteVolume: String(ticker.quoteVolume || 0),
+  priceChangePercent: String(ticker.priceChangePercent || 0),
+});
+
+const twelveQuoteToBinanceShape = (quote, fallbackSymbol) => {
+  if (!quote || quote.status === "error") {
+    throw httpError(502, quote?.message || "Twelve Data quote error");
+  }
+  const close = Number(quote.close ?? quote.price ?? 0);
+  const open = Number(quote.open ?? quote.previous_close ?? close);
+  const volume = Number(quote.volume ?? quote.average_volume ?? 0);
+  return {
+    symbol: fromTwelveSymbol(quote.symbol, fallbackSymbol),
+    lastPrice: String(close),
+    openPrice: String(open),
+    highPrice: String(quote.high ?? close),
+    lowPrice: String(quote.low ?? close),
+    volume: String(volume),
+    quoteVolume: String(volume * close || volume || 0),
+    priceChangePercent: String(quote.percent_change ?? 0),
+  };
+};
+
+const fetchTwelveQuote = async (symbol) => {
+  const params = new URLSearchParams({
+    symbol: toTwelveSymbol(symbol),
+    apikey: requireTwelveKey(),
+  });
+  return twelveQuoteToBinanceShape(await fetchJson(`${TWELVE}/quote?${params}`), symbol);
+};
+
+const fetchTwelvePopularTickers = async () => {
+  const params = new URLSearchParams({
+    symbol: POPULAR_CRYPTO.map(toTwelveSymbol).join(","),
+    apikey: requireTwelveKey(),
+  });
+  const body = await fetchJson(`${TWELVE}/quote?${params}`);
+  if (!body || body.status === "error") throw httpError(502, body?.message || "Twelve Data quote error");
+  return POPULAR_CRYPTO.map((symbol) => {
+    const quote = body[toTwelveSymbol(symbol)];
+    return quote ? twelveQuoteToBinanceShape(quote, symbol) : null;
+  }).filter(Boolean);
+};
+
+const fetchTwelveKlines = async (symbol, interval, limit) => {
+  const params = new URLSearchParams({
+    symbol: toTwelveSymbol(symbol),
+    interval: mapTwelveInterval(interval),
+    outputsize: String(clamp(Number(limit || 300), 1, 5000)),
+    apikey: requireTwelveKey(),
+  });
+  const body = await fetchJson(`${TWELVE}/time_series?${params}`);
+  if (!body || body.status === "error") throw httpError(502, body?.message || "Twelve Data time_series error");
+  return [...(body.values || [])].reverse().map((row) => {
+    const t = new Date(`${row.datetime}Z`).getTime();
+    return [t, row.open, row.high, row.low, row.close, row.volume || "0", t, "0", 0];
+  });
+};
+
 const marketKlines = async (url) => {
   const symbol = url.searchParams.get("symbol");
   if (!symbol) throw httpError(400, "symbol is required");
   const interval = url.searchParams.get("interval") || "1h";
   const limit = clamp(Number(url.searchParams.get("limit") || 300), 1, 300);
+  if (marketForSymbol(symbol) !== "crypto") {
+    return fetchTwelveKlines(symbol, interval, limit);
+  }
   const params = new URLSearchParams({
     instId: toOkxSymbol(symbol),
     bar: mapOkxInterval(interval),
     limit: String(limit),
   });
-  const body = await fetchJson(`${OKX}/api/v5/market/candles?${params}`);
-  if (String(body.code) !== "0") {
-    throw httpError(400, body.msg || "OKX error");
+  try {
+    const body = await fetchJson(`${OKX}/api/v5/market/candles?${params}`);
+    if (String(body.code) !== "0") {
+      throw httpError(400, body.msg || "OKX error");
+    }
+    return [...(body.data || [])].reverse().map((k) => {
+      const t = Number(k[0]);
+      return [t, k[1], k[2], k[3], k[4], k[5], t, k[7] || "0", 0];
+    });
+  } catch (okxError) {
+    try {
+      const binanceParams = new URLSearchParams({
+        symbol: String(symbol).toUpperCase(),
+        interval,
+        limit: String(limit),
+      });
+      return await fetchJson(`${BINANCE}/api/v3/klines?${binanceParams}`);
+    } catch {
+      return fetchTwelveKlines(symbol, interval, limit);
+    }
   }
-  return [...(body.data || [])].reverse().map((k) => {
-    const t = Number(k[0]);
-    return [t, k[1], k[2], k[3], k[4], k[5], t, k[7] || "0", 0];
-  });
 };
 
 const marketTicker24h = async (url) => {
   const symbol = url.searchParams.get("symbol");
   if (symbol) {
-    const params = new URLSearchParams({ instId: toOkxSymbol(symbol) });
-    const body = await fetchJson(`${OKX}/api/v5/market/ticker?${params}`);
-    const data = body.data || [];
-    if (!data.length) throw httpError(404, "Symbol not found");
-    return okxTickerToBinanceShape(data[0]);
+    if (marketForSymbol(symbol) !== "crypto") {
+      return fetchTwelveQuote(symbol);
+    }
+    try {
+      const params = new URLSearchParams({ instId: toOkxSymbol(symbol) });
+      const body = await fetchJson(`${OKX}/api/v5/market/ticker?${params}`);
+      const data = body.data || [];
+      if (!data.length) throw httpError(404, "Symbol not found");
+      return okxTickerToBinanceShape(data[0]);
+    } catch {
+      try {
+        const data = await fetchJson(`${BINANCE}/api/v3/ticker/24hr?${new URLSearchParams({ symbol: String(symbol).toUpperCase() })}`);
+        return binanceTickerToBinanceShape(data);
+      } catch {
+        return fetchTwelveQuote(symbol);
+      }
+    }
   }
-  const body = await fetchJson(`${OKX}/api/v5/market/tickers?instType=SPOT`);
-  return (body.data || []).map(okxTickerToBinanceShape);
+  try {
+    const body = await fetchJson(`${OKX}/api/v5/market/tickers?instType=SPOT`);
+    return (body.data || []).map(okxTickerToBinanceShape);
+  } catch {
+    try {
+      const body = await fetchJson(`${BINANCE}/api/v3/ticker/24hr`);
+      return body.map(binanceTickerToBinanceShape);
+    } catch {
+      return fetchTwelvePopularTickers();
+    }
+  }
 };
 
 const marketGlobal = async () => {
-  const data = await fetchJson(`${COINPAPRIKA}/global`);
-  return {
-    total_market_cap: { usd: data.market_cap_usd },
-    total_volume: { usd: data.volume_24h_usd },
-    market_cap_percentage: {
-      btc: data.bitcoin_dominance_percentage,
-      eth: data.ethereum_dominance_percentage,
-    },
-    market_cap_change_percentage_24h_usd: data.market_cap_change_24h,
-    active_cryptocurrencies: data.cryptocurrencies_number,
-    markets: data.markets_number,
-  };
+  try {
+    const data = await fetchJson(`${COINPAPRIKA}/global`);
+    return {
+      total_market_cap: { usd: data.market_cap_usd },
+      total_volume: { usd: data.volume_24h_usd },
+      market_cap_percentage: {
+        btc: data.bitcoin_dominance_percentage,
+        eth: data.ethereum_dominance_percentage,
+      },
+      market_cap_change_percentage_24h_usd: data.market_cap_change_24h,
+      active_cryptocurrencies: data.cryptocurrencies_number,
+      markets: data.markets_number,
+    };
+  } catch {
+    const data = await fetchJson(`${COINGECKO}/global`);
+    const global = data.data || {};
+    return {
+      total_market_cap: { usd: global.total_market_cap?.usd },
+      total_volume: { usd: global.total_volume?.usd },
+      market_cap_percentage: {
+        btc: global.market_cap_percentage?.btc,
+        eth: global.market_cap_percentage?.eth,
+      },
+      market_cap_change_percentage_24h_usd: global.market_cap_change_percentage_24h_usd,
+      active_cryptocurrencies: global.active_cryptocurrencies,
+      markets: global.markets,
+    };
+  }
 };
 
 const marketSearch = async (url) => {

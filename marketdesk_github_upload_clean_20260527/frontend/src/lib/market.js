@@ -93,3 +93,27 @@ export const POPULAR_CRYPTO = [
   "ADAUSDT", "AVAXUSDT", "DOGEUSDT", "LINKUSDT", "MATICUSDT",
   "DOTUSDT", "ARBUSDT", "OPUSDT", "INJUSDT", "SUIUSDT",
 ];
+
+export const POPULAR_FOREX = [
+  "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD", "EURJPY",
+];
+
+export const POPULAR_INDICES = [
+  "SPX", "NDX", "DJI", "IXIC", "RUT", "DAX", "FTSE", "N225",
+];
+
+const FOREX_CODES = new Set(["USD", "EUR", "GBP", "JPY", "AUD", "NZD", "CAD", "CHF", "TRY", "CNH", "SEK", "NOK", "DKK", "MXN", "ZAR"]);
+
+export function getMarketType(symbol) {
+  const clean = String(symbol || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (clean.length === 6 && FOREX_CODES.has(clean.slice(0, 3)) && FOREX_CODES.has(clean.slice(3, 6))) return "forex";
+  if (POPULAR_INDICES.includes(clean) || ["SP500", "NASDAQ100", "DOW"].includes(clean)) return "index";
+  return "crypto";
+}
+
+export function getMarketLabel(symbol) {
+  const market = getMarketType(symbol);
+  if (market === "forex") return "Forex";
+  if (market === "index") return "Index";
+  return "Crypto";
+}

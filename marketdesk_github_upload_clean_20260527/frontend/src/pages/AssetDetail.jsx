@@ -4,7 +4,7 @@ import { ArrowUpRight, ArrowDownRight, BookmarkPlus, BookmarkCheck, BarChart3, C
 import PriceChart from "@/components/PriceChart";
 import TechnicalPanel from "@/components/TechnicalPanel";
 import AIAnalysisPanel from "@/components/AIAnalysisPanel";
-import { fetchKlines, fetchTicker24h, TIMEFRAMES } from "@/lib/market";
+import { fetchKlines, fetchTicker24h, TIMEFRAMES, getMarketLabel, getMarketType } from "@/lib/market";
 import { computeIndicators, quickVerdict } from "@/lib/indicators";
 import { analyzeAsset } from "@/lib/api";
 import { fmtPrice, fmtPct, fmtVol, fmtDate } from "@/lib/format";
@@ -67,6 +67,9 @@ export default function AssetDetail() {
   }, [user, symbol]);
 
   const indicators = useMemo(() => computeIndicators(candles), [candles]);
+  const marketType = useMemo(() => getMarketType(symbol), [symbol]);
+  const marketLabel = useMemo(() => getMarketLabel(symbol), [symbol]);
+  const marketHeader = marketType === "crypto" ? "Crypto · Spot" : `${marketLabel} · Twelve Data`;
   const verdict = useMemo(
     () => indicators ? quickVerdict(indicators.snapshot, ticker?.last) : { score: 0, label: "neutral" },
     [indicators, ticker]
@@ -79,7 +82,7 @@ export default function AssetDetail() {
     try {
       const payload = {
         symbol,
-        market: "crypto",
+        market: marketType,
         timeframe,
         current_price: ticker.last,
         change_24h: ticker.changePct,
@@ -94,7 +97,7 @@ export default function AssetDetail() {
         await supabase.from("analysis_history").insert({
           user_id: user.id,
           symbol,
-          market: "crypto",
+          market: marketType,
           timeframe,
           verdict: res.verdict,
           combined_score: res.combined_score,
@@ -107,7 +110,7 @@ export default function AssetDetail() {
     } finally {
       setAiLoading(false);
     }
-  }, [symbol, timeframe, ticker, indicators, candles, user]);
+  }, [symbol, timeframe, ticker, indicators, candles, user, marketType]);
 
   const toggleWatchlist = async () => {
     if (!user || watchlists.length === 0) {
@@ -123,7 +126,7 @@ export default function AssetDetail() {
         watchlist_id: wl.id,
         user_id: user.id,
         symbol,
-        market: "crypto",
+        market: marketType,
       });
       setInWatchlist(true);
     }
@@ -141,7 +144,7 @@ export default function AssetDetail() {
             ← Back
           </button>
           <div>
-            <div className="text-[11px] tracking-[0.1em] uppercase font-semibold text-zinc-500">Crypto · Spot</div>
+            <div className="text-[11px] tracking-[0.1em] uppercase font-semibold text-zinc-500">{marketHeader}</div>
             <h1 className="text-4xl font-heading font-extrabold tracking-tight text-zinc-950 mt-1" data-testid="asset-symbol">{symbol}</h1>
             <div className="flex items-baseline gap-3 mt-1.5">
               <div className="text-3xl font-medium tabular-nums text-zinc-900" data-testid="asset-price">

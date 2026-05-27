@@ -4,7 +4,7 @@ import { Trash2, Plus, Bookmark } from "lucide-react";
 import SymbolSearch from "@/components/SymbolSearch";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/context/AuthContext";
-import { fetchTicker24h } from "@/lib/market";
+import { fetchTicker24h, getMarketType } from "@/lib/market";
 import { fmtPrice, fmtPct } from "@/lib/format";
 
 export default function Watchlists() {
@@ -72,7 +72,7 @@ export default function Watchlists() {
       watchlist_id: activeListId,
       user_id: user.id,
       symbol: sym,
-      market: "crypto",
+      market: getMarketType(sym),
     });
     if (!error) {
       const { data } = await supabase.from("watchlist_items").select("*").eq("watchlist_id", activeListId).order("created_at");

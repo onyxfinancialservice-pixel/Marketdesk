@@ -462,12 +462,13 @@ const marketKlines = async (url) => {
   if (!symbol) throw httpError(400, "symbol is required");
   const interval = url.searchParams.get("interval") || "1h";
   const limit = clamp(Number(url.searchParams.get("limit") || 300), 1, 300);
+  try {
+    return await fetchYahooKlines(symbol, interval, limit);
+  } catch {
+    // Keep exchange/API fallbacks so the chart still has a route if Yahoo is unavailable.
+  }
   if (marketForSymbol(symbol) !== "crypto") {
-    try {
-      return await fetchYahooKlines(symbol, interval, limit);
-    } catch {
-      return fetchTwelveKlines(symbol, interval, limit);
-    }
+    return fetchTwelveKlines(symbol, interval, limit);
   }
   const params = new URLSearchParams({
     instId: toOkxSymbol(symbol),
@@ -505,12 +506,13 @@ const marketTicker24h = async (url) => {
   const symbol = url.searchParams.get("symbol");
   const market = url.searchParams.get("market") || "crypto";
   if (symbol) {
+    try {
+      return await fetchYahooQuote(symbol);
+    } catch {
+      // Fall through to exchange/Twelve fallbacks.
+    }
     if (marketForSymbol(symbol) !== "crypto") {
-      try {
-        return await fetchYahooQuote(symbol);
-      } catch {
-        return fetchTwelveQuote(symbol);
-      }
+      return fetchTwelveQuote(symbol);
     }
     try {
       const params = new URLSearchParams({ instId: toOkxSymbol(symbol) });
@@ -531,26 +533,34 @@ const marketTicker24h = async (url) => {
       }
     }
   }
+  const preferredSymbols = marketList(market);
+  try {
+    const rows = await fetchYahooQuotes(preferredSymbols);
+    if (rows.length) return rows;
+  } catch {
+    // Keep the selected market cards populated through the fallbacks below.
+  }
   if (market === "forex" || market === "index") {
-    try {
-      return await fetchYahooQuotes(marketList(market));
-    } catch {
-      const rows = await Promise.all(marketList(market).map((item) => fetchTwelveQuote(item).catch(() => null)));
-      return rows.filter(Boolean);
-    }
+    const rows = await Promise.all(preferredSymbols.map((item) => fetchTwelveQuote(item).catch(() => null)));
+    return rows.filter(Boolean);
   }
   try {
     const body = await fetchJson(`${OKX}/api/v5/market/tickers?instType=SPOT`);
-    const rows = (body.data || []).map(okxTickerToBinanceShape);
-    return rows.length ? rows : await fetchYahooQuotes(marketList("crypto"));
+    const rows = (body.data || [])
+      .map(okxTickerToBinanceShape)
+      .filter((row) => preferredSymbols.includes(row.symbol));
+    if (rows.length) return rows;
+    return await fetchYahooQuotes(preferredSymbols);
   } catch {
     try {
-      const body = await fetchJson(`${BINANCE}/api/v3/ticker/24hr`);
-      const rows = body.map(binanceTickerToBinanceShape);
-      return rows.length ? rows : await fetchYahooQuotes(marketList("crypto"));
+      const rows = await Promise.all(preferredSymbols.map(async (item) => {
+        const data = await fetchJson(`${BINANCE}/api/v3/ticker/24hr?${new URLSearchParams({ symbol: item })}`);
+        return binanceTickerToBinanceShape(data);
+      }));
+      return rows.filter(Boolean);
     } catch {
       try {
-        return await fetchYahooQuotes(marketList("crypto"));
+        return await fetchYahooQuotes(preferredSymbols);
       } catch {
         return fetchTwelvePopularTickers();
       }

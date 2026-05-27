@@ -69,7 +69,7 @@ export default function AssetDetail() {
   const indicators = useMemo(() => computeIndicators(candles), [candles]);
   const marketType = useMemo(() => getMarketType(symbol), [symbol]);
   const marketLabel = useMemo(() => getMarketLabel(symbol), [symbol]);
-  const marketHeader = marketType === "crypto" ? "Crypto · Spot" : `${marketLabel} · Twelve Data`;
+  const marketHeader = `${marketLabel} · Yahoo`;
   const verdict = useMemo(
     () => indicators ? quickVerdict(indicators.snapshot, ticker?.last) : { score: 0, label: "neutral" },
     [indicators, ticker]

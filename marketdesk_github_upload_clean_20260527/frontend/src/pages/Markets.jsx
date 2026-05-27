@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { TrendingUp, TrendingDown } from "lucide-react";
 import SymbolSearch from "@/components/SymbolSearch";
-import { fetchAllTickers } from "@/lib/market";
+import { fetchAllTickers, MARKET_TABS } from "@/lib/market";
 import { fmtPrice, fmtPct, fmtVol } from "@/lib/format";
 
 const SORTS = [
@@ -14,6 +14,8 @@ const SORTS = [
 
 export default function Markets() {
   const navigate = useNavigate();
+  const [params, setParams] = useSearchParams();
+  const market = params.get("market") || "crypto";
   const [rows, setRows] = useState([]);
   const [sort, setSort] = useState("volume");
   const [filter, setFilter] = useState("");
@@ -22,16 +24,18 @@ export default function Markets() {
     let alive = true;
     const load = async () => {
       try {
-        const all = await fetchAllTickers();
+        const all = await fetchAllTickers(market);
         if (!alive) return;
-        const usdt = all.filter((t) => t.symbol.endsWith("USDT") && parseFloat(t.quoteVolume) > 1_000_000);
-        setRows(usdt);
+        const filtered = market === "crypto"
+          ? all.filter((t) => t.symbol.endsWith("USDT") && parseFloat(t.quoteVolume) > 1_000_000)
+          : all;
+        setRows(filtered);
       } catch (e) { /* noop */ }
     };
     load();
     const id = setInterval(load, 20_000);
     return () => { alive = false; clearInterval(id); };
-  }, []);
+  }, [market]);
 
   const sorted = useMemo(() => {
     let r = [...rows];
@@ -49,7 +53,7 @@ export default function Markets() {
         <div>
           <div className="text-[11px] tracking-[0.1em] uppercase font-semibold text-zinc-500">Screener</div>
           <h1 className="text-4xl font-heading font-extrabold tracking-tight text-zinc-950 mt-1">Markets</h1>
-          <p className="text-sm text-zinc-500 mt-1.5">All Binance USDT pairs with $1M+ 24h volume. Live.</p>
+          <p className="text-sm text-zinc-500 mt-1.5">Live markets across crypto, forex, and indices. Click a row to open the chart.</p>
         </div>
         <div className="w-full sm:w-80">
           <SymbolSearch />
@@ -58,6 +62,19 @@ export default function Markets() {
 
       <div className="bg-white border border-zinc-200 rounded-lg overflow-hidden">
         <div className="px-5 py-3 border-b border-zinc-100 flex items-center gap-3 flex-wrap">
+          <div className="flex items-center gap-1 bg-zinc-50 rounded-md p-0.5">
+            {MARKET_TABS.map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => setParams({ market: tab.id })}
+                className={`px-3 py-1.5 text-xs font-semibold rounded transition-colors ${
+                  market === tab.id ? "bg-white text-zinc-950 shadow-sm" : "text-zinc-500 hover:text-zinc-900"
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
           <div className="flex items-center gap-1 bg-zinc-50 rounded-md p-0.5">
             {SORTS.map((s) => (
               <button

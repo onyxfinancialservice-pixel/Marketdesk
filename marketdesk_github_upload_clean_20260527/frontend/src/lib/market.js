@@ -41,8 +41,8 @@ export async function fetchTicker24h(symbol) {
   };
 }
 
-export async function fetchAllTickers() {
-  const { data } = await apiClient.get("/market/ticker24h");
+export async function fetchAllTickers(market = "crypto") {
+  const { data } = await apiClient.get("/market/ticker24h", { params: { market } });
   return data;
 }
 
@@ -101,6 +101,18 @@ export const POPULAR_FOREX = [
 export const POPULAR_INDICES = [
   "SPX", "NDX", "DJI", "IXIC", "RUT", "DAX", "FTSE", "N225",
 ];
+
+export const MARKET_TABS = [
+  { id: "crypto", label: "Crypto" },
+  { id: "forex", label: "Forex" },
+  { id: "index", label: "Indices" },
+];
+
+export function popularForMarket(market) {
+  if (market === "forex") return POPULAR_FOREX;
+  if (market === "index") return POPULAR_INDICES;
+  return POPULAR_CRYPTO;
+}
 
 const FOREX_CODES = new Set(["USD", "EUR", "GBP", "JPY", "AUD", "NZD", "CAD", "CHF", "TRY", "CNH", "SEK", "NOK", "DKK", "MXN", "ZAR"]);
 

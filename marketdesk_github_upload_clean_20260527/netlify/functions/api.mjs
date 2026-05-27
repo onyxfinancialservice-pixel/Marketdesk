@@ -3,12 +3,15 @@ const BINANCE = "https://api.binance.com";
 const COINPAPRIKA = "https://api.coinpaprika.com/v1";
 const COINGECKO = "https://api.coingecko.com/api/v3";
 const TWELVE = "https://api.twelvedata.com";
+const YAHOO = "https://query1.finance.yahoo.com";
 const DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-5-20250929";
 const POPULAR_CRYPTO = [
   "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
   "ADAUSDT", "AVAXUSDT", "DOGEUSDT", "LINKUSDT", "MATICUSDT",
   "DOTUSDT", "ARBUSDT", "OPUSDT", "INJUSDT", "SUIUSDT",
 ];
+const POPULAR_FOREX = ["EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD", "EURJPY"];
+const POPULAR_INDICES = ["SPX", "NDX", "DJI", "IXIC", "RUT", "DAX", "FTSE", "N225"];
 const FOREX_CODES = new Set(["USD", "EUR", "GBP", "JPY", "AUD", "NZD", "CAD", "CHF", "TRY", "CNH", "SEK", "NOK", "DKK", "MXN", "ZAR"]);
 const INDEX_ALIASES = new Map([
   ["SPX", "SPX"],
@@ -141,6 +144,12 @@ const marketForSymbol = (symbol) => {
   return "crypto";
 };
 
+const marketList = (market) => {
+  if (market === "forex") return POPULAR_FOREX;
+  if (market === "index") return POPULAR_INDICES;
+  return POPULAR_CRYPTO;
+};
+
 const toTwelveSymbol = (symbol) => {
   const raw = String(symbol || "").trim().toUpperCase();
   if (raw.includes("/")) return raw;
@@ -159,6 +168,171 @@ const toTwelveSymbol = (symbol) => {
 const fromTwelveSymbol = (symbol, fallback) => {
   if (fallback) return String(fallback).toUpperCase().replace(/[^A-Z0-9]/g, "");
   return String(symbol || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+};
+
+const YAHOO_INDEX_SYMBOLS = new Map([
+  ["SPX", "^GSPC"],
+  ["SP500", "^GSPC"],
+  ["NDX", "^NDX"],
+  ["NASDAQ100", "^NDX"],
+  ["DJI", "^DJI"],
+  ["DOW", "^DJI"],
+  ["IXIC", "^IXIC"],
+  ["RUT", "^RUT"],
+  ["DAX", "^GDAXI"],
+  ["FTSE", "^FTSE"],
+  ["N225", "^N225"],
+]);
+
+const toYahooSymbol = (symbol) => {
+  const compact = String(symbol || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (YAHOO_INDEX_SYMBOLS.has(compact)) return YAHOO_INDEX_SYMBOLS.get(compact);
+  if (isForexSymbol(compact)) return `${compact}=X`;
+  for (const quote of ["USDT", "USDC", "USD"]) {
+    if (compact.endsWith(quote) && compact.length > quote.length) {
+      return `${compact.slice(0, -quote.length)}-USD`;
+    }
+  }
+  return compact;
+};
+
+const fromYahooSymbol = (symbol, fallback) => {
+  if (fallback) return String(fallback).toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const raw = String(symbol || "").toUpperCase();
+  const indexMatch = [...YAHOO_INDEX_SYMBOLS.entries()].find(([, yahoo]) => yahoo === raw);
+  if (indexMatch) return indexMatch[0];
+  if (raw.endsWith("=X")) return raw.replace("=X", "");
+  return raw.replace("-USD", "USDT").replace(/[^A-Z0-9]/g, "");
+};
+
+const yahooQuoteToBinanceShape = (quote, fallbackSymbol) => {
+  const last = Number(quote.regularMarketPrice ?? quote.postMarketPrice ?? quote.preMarketPrice ?? 0);
+  const open = Number(quote.regularMarketOpen ?? quote.regularMarketPreviousClose ?? last);
+  const high = Number(quote.regularMarketDayHigh ?? last);
+  const low = Number(quote.regularMarketDayLow ?? last);
+  const volume = Number(quote.regularMarketVolume ?? 0);
+  const changePct = Number(quote.regularMarketChangePercent ?? 0);
+  return {
+    symbol: fromYahooSymbol(quote.symbol, fallbackSymbol),
+    lastPrice: String(last),
+    openPrice: String(open),
+    highPrice: String(high),
+    lowPrice: String(low),
+    volume: String(volume),
+    quoteVolume: String(volume * last || volume || 0),
+    priceChangePercent: String(changePct),
+  };
+};
+
+const fetchYahooQuotes = async (symbols) => {
+  const yahooSymbols = symbols.map(toYahooSymbol);
+  const params = new URLSearchParams({ symbols: yahooSymbols.join(",") });
+  let results = [];
+  try {
+    const body = await fetchJson(`${YAHOO}/v7/finance/quote?${params}`);
+    results = body.quoteResponse?.result || [];
+  } catch {
+    results = [];
+  }
+  const primaryRows = symbols.map((symbol) => {
+    const yahoo = toYahooSymbol(symbol);
+    const quote = results.find((row) => row.symbol === yahoo);
+    return quote ? yahooQuoteToBinanceShape(quote, symbol) : null;
+  });
+  const fallbackRows = await Promise.all(
+    symbols.map((symbol, index) => primaryRows[index] ? null : fetchYahooChartQuote(symbol).catch(() => null))
+  );
+  return symbols.map((symbol, index) => primaryRows[index] || fallbackRows[index]).filter(Boolean);
+};
+
+const fetchYahooQuote = async (symbol) => {
+  const rows = await fetchYahooQuotes([symbol]);
+  if (!rows.length) throw httpError(404, "Yahoo symbol not found");
+  return rows[0];
+};
+
+const yahooChartQuoteToBinanceShape = (body, fallbackSymbol) => {
+  const result = body.chart?.result?.[0];
+  if (!result) throw httpError(502, body.chart?.error?.description || "Yahoo chart error");
+  const meta = result.meta || {};
+  const quote = result.indicators?.quote?.[0] || {};
+  const closes = (quote.close || []).filter((value) => value != null && !Number.isNaN(Number(value))).map(Number);
+  const highs = (quote.high || []).filter((value) => value != null && !Number.isNaN(Number(value))).map(Number);
+  const lows = (quote.low || []).filter((value) => value != null && !Number.isNaN(Number(value))).map(Number);
+  const volumes = (quote.volume || []).filter((value) => value != null && !Number.isNaN(Number(value))).map(Number);
+  const last = Number(meta.regularMarketPrice ?? closes.at(-1) ?? 0);
+  const open = Number(meta.chartPreviousClose ?? closes.at(-2) ?? last);
+  const high = Number(meta.regularMarketDayHigh ?? highs.at(-1) ?? Math.max(last, open));
+  const low = Number(meta.regularMarketDayLow ?? lows.at(-1) ?? Math.min(last, open));
+  const volume = Number(meta.regularMarketVolume ?? volumes.at(-1) ?? 0);
+  const changePct = open ? ((last - open) / open) * 100 : 0;
+  return {
+    symbol: fromYahooSymbol(meta.symbol, fallbackSymbol),
+    lastPrice: String(last),
+    openPrice: String(open),
+    highPrice: String(high),
+    lowPrice: String(low),
+    volume: String(volume),
+    quoteVolume: String(volume * last || volume || 0),
+    priceChangePercent: String(changePct),
+  };
+};
+
+const fetchYahooChartQuote = async (symbol) => {
+  const params = new URLSearchParams({ range: "5d", interval: "1d" });
+  const body = await fetchJson(`${YAHOO}/v8/finance/chart/${encodeURIComponent(toYahooSymbol(symbol))}?${params}`);
+  return yahooChartQuoteToBinanceShape(body, symbol);
+};
+
+const yahooRangeForInterval = (interval) => {
+  const tf = String(interval || "1h").toLowerCase();
+  if (tf.endsWith("m")) return "5d";
+  if (tf.endsWith("h")) return "1mo";
+  if (tf === "1w") return "2y";
+  if (tf === "1mo") return "5y";
+  return "1y";
+};
+
+const mapYahooInterval = (interval) => {
+  const tf = String(interval || "1h").toLowerCase();
+  return (
+    {
+      "1m": "1m",
+      "3m": "5m",
+      "5m": "5m",
+      "15m": "15m",
+      "30m": "30m",
+      "1h": "1h",
+      "2h": "1h",
+      "4h": "1h",
+      "1d": "1d",
+      "1w": "1wk",
+      "1mo": "1mo",
+    }[tf] || "1h"
+  );
+};
+
+const fetchYahooKlines = async (symbol, interval, limit) => {
+  const params = new URLSearchParams({
+    range: yahooRangeForInterval(interval),
+    interval: mapYahooInterval(interval),
+  });
+  const body = await fetchJson(`${YAHOO}/v8/finance/chart/${encodeURIComponent(toYahooSymbol(symbol))}?${params}`);
+  const result = body.chart?.result?.[0];
+  if (!result) throw httpError(502, body.chart?.error?.description || "Yahoo chart error");
+  const timestamps = result.timestamp || [];
+  const quote = result.indicators?.quote?.[0] || {};
+  const rows = timestamps.map((ts, idx) => {
+    const open = quote.open?.[idx];
+    const high = quote.high?.[idx];
+    const low = quote.low?.[idx];
+    const close = quote.close?.[idx];
+    if ([open, high, low, close].some((value) => value == null || Number.isNaN(Number(value)))) return null;
+    const t = Number(ts) * 1000;
+    const volume = quote.volume?.[idx] || 0;
+    return [t, String(open), String(high), String(low), String(close), String(volume), t, String(volume * close || 0), 0];
+  }).filter(Boolean);
+  return rows.slice(-clamp(Number(limit || 300), 1, 300));
 };
 
 const mapOkxInterval = (timeframe) => {
@@ -289,7 +463,11 @@ const marketKlines = async (url) => {
   const interval = url.searchParams.get("interval") || "1h";
   const limit = clamp(Number(url.searchParams.get("limit") || 300), 1, 300);
   if (marketForSymbol(symbol) !== "crypto") {
-    return fetchTwelveKlines(symbol, interval, limit);
+    try {
+      return await fetchYahooKlines(symbol, interval, limit);
+    } catch {
+      return fetchTwelveKlines(symbol, interval, limit);
+    }
   }
   const params = new URLSearchParams({
     instId: toOkxSymbol(symbol),
@@ -314,16 +492,25 @@ const marketKlines = async (url) => {
       });
       return await fetchJson(`${BINANCE}/api/v3/klines?${binanceParams}`);
     } catch {
-      return fetchTwelveKlines(symbol, interval, limit);
+      try {
+        return await fetchYahooKlines(symbol, interval, limit);
+      } catch {
+        return fetchTwelveKlines(symbol, interval, limit);
+      }
     }
   }
 };
 
 const marketTicker24h = async (url) => {
   const symbol = url.searchParams.get("symbol");
+  const market = url.searchParams.get("market") || "crypto";
   if (symbol) {
     if (marketForSymbol(symbol) !== "crypto") {
-      return fetchTwelveQuote(symbol);
+      try {
+        return await fetchYahooQuote(symbol);
+      } catch {
+        return fetchTwelveQuote(symbol);
+      }
     }
     try {
       const params = new URLSearchParams({ instId: toOkxSymbol(symbol) });
@@ -336,19 +523,37 @@ const marketTicker24h = async (url) => {
         const data = await fetchJson(`${BINANCE}/api/v3/ticker/24hr?${new URLSearchParams({ symbol: String(symbol).toUpperCase() })}`);
         return binanceTickerToBinanceShape(data);
       } catch {
-        return fetchTwelveQuote(symbol);
+        try {
+          return await fetchYahooQuote(symbol);
+        } catch {
+          return fetchTwelveQuote(symbol);
+        }
       }
+    }
+  }
+  if (market === "forex" || market === "index") {
+    try {
+      return await fetchYahooQuotes(marketList(market));
+    } catch {
+      const rows = await Promise.all(marketList(market).map((item) => fetchTwelveQuote(item).catch(() => null)));
+      return rows.filter(Boolean);
     }
   }
   try {
     const body = await fetchJson(`${OKX}/api/v5/market/tickers?instType=SPOT`);
-    return (body.data || []).map(okxTickerToBinanceShape);
+    const rows = (body.data || []).map(okxTickerToBinanceShape);
+    return rows.length ? rows : await fetchYahooQuotes(marketList("crypto"));
   } catch {
     try {
       const body = await fetchJson(`${BINANCE}/api/v3/ticker/24hr`);
-      return body.map(binanceTickerToBinanceShape);
+      const rows = body.map(binanceTickerToBinanceShape);
+      return rows.length ? rows : await fetchYahooQuotes(marketList("crypto"));
     } catch {
-      return fetchTwelvePopularTickers();
+      try {
+        return await fetchYahooQuotes(marketList("crypto"));
+      } catch {
+        return fetchTwelvePopularTickers();
+      }
     }
   }
 };

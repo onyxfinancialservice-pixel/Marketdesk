@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowUpRight, ArrowDownRight, Activity, BarChart3, Database, X } from "lucide-react";
 import SymbolSearch from "@/components/SymbolSearch";
-import { fetchAllTickers, fetchGlobal, POPULAR_CRYPTO } from "@/lib/market";
+import { fetchAllTickers, fetchGlobal, MARKET_TABS, popularForMarket } from "@/lib/market";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/context/AuthContext";
 import { fmtPrice, fmtPct, fmtVol } from "@/lib/format";
@@ -13,6 +13,7 @@ export default function Dashboard() {
   const [tickers, setTickers] = useState({});
   const [movers, setMovers] = useState({ gainers: [], losers: [] });
   const [global, setGlobal] = useState(null);
+  const [assetMarket, setAssetMarket] = useState("crypto");
   const [watchSyms, setWatchSyms] = useState([]);
   const [dbReady, setDbReady] = useState(true);
   const [dismissedSetup, setDismissedSetup] = useState(
@@ -27,22 +28,22 @@ export default function Dashboard() {
     let alive = true;
     const load = async () => {
       try {
-        const all = await fetchAllTickers();
+        const all = await fetchAllTickers(assetMarket);
         if (!alive) return;
         const map = {};
         all.forEach((t) => { map[t.symbol] = t; });
         setTickers(map);
-        const usdt = all
-          .filter((t) => t.symbol.endsWith("USDT") && parseFloat(t.quoteVolume) > 5_000_000)
+        const rows = all
+          .filter((t) => assetMarket !== "crypto" || (t.symbol.endsWith("USDT") && parseFloat(t.quoteVolume) > 5_000_000))
           .map((t) => ({ ...t, changePct: parseFloat(t.priceChangePercent) }));
-        const sorted = [...usdt].sort((a, b) => b.changePct - a.changePct);
+        const sorted = [...rows].sort((a, b) => b.changePct - a.changePct);
         setMovers({ gainers: sorted.slice(0, 6), losers: sorted.slice(-6).reverse() });
       } catch (e) { /* noop */ }
     };
     load();
     const id = setInterval(load, 30_000);
     return () => { alive = false; clearInterval(id); };
-  }, []);
+  }, [assetMarket]);
 
   useEffect(() => {
     if (!user) return;
@@ -163,9 +164,27 @@ export default function Dashboard() {
         </Panel>
       </div>
 
-      <Panel title="Popular Assets" testid="popular-assets">
+      <Panel
+        title="Popular Assets"
+        testid="popular-assets"
+        action={(
+          <div className="flex items-center gap-1 bg-zinc-50 rounded-md p-0.5">
+            {MARKET_TABS.map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => setAssetMarket(tab.id)}
+                className={`px-2.5 py-1 text-[11px] font-semibold rounded transition-colors ${
+                  assetMarket === tab.id ? "bg-white text-zinc-950 shadow-sm" : "text-zinc-500 hover:text-zinc-900"
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        )}
+      >
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 p-4">
-          {POPULAR_CRYPTO.map((s) => {
+          {popularForMarket(assetMarket).map((s) => {
             const t = tickers[s];
             const ch = t ? parseFloat(t.priceChangePercent) : null;
             return (
@@ -205,11 +224,12 @@ function StatCard({ label, value, sub, tone, icon: Icon }) {
   );
 }
 
-function Panel({ title, children, testid }) {
+function Panel({ title, children, testid, action }) {
   return (
     <div className="bg-white border border-zinc-200 rounded-lg overflow-hidden" data-testid={testid}>
-      <div className="px-5 py-3.5 border-b border-zinc-100">
+      <div className="px-5 py-3.5 border-b border-zinc-100 flex items-center justify-between gap-3">
         <div className="text-[11px] tracking-[0.1em] uppercase font-semibold text-zinc-500">{title}</div>
+        {action}
       </div>
       <div>{children}</div>
     </div>

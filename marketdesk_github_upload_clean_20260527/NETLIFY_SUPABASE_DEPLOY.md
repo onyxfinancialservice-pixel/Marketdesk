@@ -5,7 +5,9 @@ components, technical engine UI, or page layout.
 
 ## Supabase
 
-Run `supabase/schema.sql` once in Supabase SQL Editor.
+Run `supabase/schema.sql` once in Supabase SQL Editor. Re-run it after this
+update so Social, Journal, Payout Tracker, and the `social-images` storage
+bucket/policies are created.
 
 Set these values in Netlify under Site settings -> Environment variables:
 
@@ -26,7 +28,7 @@ Netlify reads `netlify.toml`:
 
 | Setting | Value |
 | --- | --- |
-| Build command | `cd frontend && npm install --legacy-peer-deps && npm run build` |
+| Build command | `cd frontend && npm install --legacy-peer-deps --no-audit --no-fund && CI=false npm run build` |
 | Publish directory | `frontend/build` |
 | Functions directory | `netlify/functions` |
 
@@ -35,6 +37,9 @@ function routing survive manual/static deploy flows.
 
 Leave `REACT_APP_BACKEND_URL` empty in production. The frontend will call
 same-origin `/api/*`, and Netlify will run `netlify/functions/api.mjs`.
+
+Market data now uses OKX/Binance for crypto and Yahoo chart data for forex and
+indices, with Twelve Data as a server-side fallback.
 
 ## AI Analysis Key
 

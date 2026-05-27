@@ -1,0 +1,422 @@
+const OKX = "https://www.okx.com";
+const COINPAPRIKA = "https://api.coinpaprika.com/v1";
+const COINGECKO = "https://api.coingecko.com/api/v3";
+const DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-5-20250929";
+
+const getEnv = (name) => {
+  if (globalThis.Netlify?.env?.get) {
+    return globalThis.Netlify.env.get(name);
+  }
+  return process.env[name];
+};
+
+const json = (body, status = 200, request) => {
+  const headers = {
+    "content-type": "application/json; charset=utf-8",
+    "cache-control": "no-store",
+  };
+  if (request) {
+    Object.assign(headers, corsHeaders(request));
+  }
+  return new Response(JSON.stringify(body), { status, headers });
+};
+
+const corsHeaders = (request) => ({
+  "access-control-allow-origin": request.headers.get("origin") || "*",
+  "access-control-allow-methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+  "access-control-allow-headers": request.headers.get("access-control-request-headers") || "content-type,authorization",
+  "access-control-max-age": "86400",
+});
+
+const withCors = (response, request) => {
+  const headers = new Headers(response.headers);
+  for (const [key, value] of Object.entries(corsHeaders(request))) {
+    headers.set(key, value);
+  }
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+};
+
+const routePath = (request) => {
+  const url = new URL(request.url);
+  const path = url.pathname
+    .replace(/^\/\.netlify\/functions\/api\/?/, "/")
+    .replace(/^\/api\/?/, "/");
+  return path === "" ? "/" : path;
+};
+
+const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+
+const requestJson = async (request) => {
+  try {
+    return await request.json();
+  } catch {
+    throw httpError(400, "Invalid JSON body");
+  }
+};
+
+const httpError = (status, detail) => {
+  const error = new Error(detail);
+  error.status = status;
+  return error;
+};
+
+const fetchJson = async (url, options = {}) => {
+  const response = await fetch(url, {
+    ...options,
+    headers: {
+      "user-agent": "MarketDesk/1.0",
+      ...(options.headers || {}),
+    },
+  });
+  const text = await response.text();
+  let body;
+  try {
+    body = text ? JSON.parse(text) : null;
+  } catch {
+    body = text;
+  }
+  if (!response.ok) {
+    throw httpError(response.status, typeof body === "string" ? body : JSON.stringify(body));
+  }
+  return body;
+};
+
+const QUOTES = ["USDT", "USDC", "USD", "BTC", "ETH", "BNB", "EUR", "TRY", "BRL"];
+
+const toOkxSymbol = (symbol) => {
+  const clean = String(symbol || "").toUpperCase().replace(/-/g, "");
+  for (const quote of QUOTES) {
+    if (clean.endsWith(quote) && clean.length > quote.length) {
+      return `${clean.slice(0, -quote.length)}-${quote}`;
+    }
+  }
+  return clean;
+};
+
+const fromOkxSymbol = (instId) => String(instId || "").replace(/-/g, "");
+
+const mapOkxInterval = (timeframe) => {
+  const tf = String(timeframe || "1h").toLowerCase();
+  return (
+    {
+      "1m": "1m",
+      "3m": "3m",
+      "5m": "5m",
+      "15m": "15m",
+      "30m": "30m",
+      "1h": "1H",
+      "2h": "2H",
+      "4h": "4H",
+      "6h": "6H",
+      "12h": "12H",
+      "1d": "1D",
+      "1w": "1W",
+      "1mo": "1M",
+    }[tf] || "1H"
+  );
+};
+
+const okxTickerToBinanceShape = (ticker) => {
+  const last = Number(ticker.last || 0);
+  const open24 = Number(ticker.open24h || 0);
+  const changePct = open24 ? ((last - open24) / open24) * 100 : 0;
+  return {
+    symbol: fromOkxSymbol(ticker.instId),
+    lastPrice: String(last),
+    openPrice: String(open24),
+    highPrice: String(ticker.high24h || 0),
+    lowPrice: String(ticker.low24h || 0),
+    volume: String(ticker.vol24h || 0),
+    quoteVolume: String(ticker.volCcy24h || 0),
+    priceChangePercent: changePct.toFixed(4),
+  };
+};
+
+const marketKlines = async (url) => {
+  const symbol = url.searchParams.get("symbol");
+  if (!symbol) throw httpError(400, "symbol is required");
+  const interval = url.searchParams.get("interval") || "1h";
+  const limit = clamp(Number(url.searchParams.get("limit") || 300), 1, 300);
+  const params = new URLSearchParams({
+    instId: toOkxSymbol(symbol),
+    bar: mapOkxInterval(interval),
+    limit: String(limit),
+  });
+  const body = await fetchJson(`${OKX}/api/v5/market/candles?${params}`);
+  if (String(body.code) !== "0") {
+    throw httpError(400, body.msg || "OKX error");
+  }
+  return [...(body.data || [])].reverse().map((k) => {
+    const t = Number(k[0]);
+    return [t, k[1], k[2], k[3], k[4], k[5], t, k[7] || "0", 0];
+  });
+};
+
+const marketTicker24h = async (url) => {
+  const symbol = url.searchParams.get("symbol");
+  if (symbol) {
+    const params = new URLSearchParams({ instId: toOkxSymbol(symbol) });
+    const body = await fetchJson(`${OKX}/api/v5/market/ticker?${params}`);
+    const data = body.data || [];
+    if (!data.length) throw httpError(404, "Symbol not found");
+    return okxTickerToBinanceShape(data[0]);
+  }
+  const body = await fetchJson(`${OKX}/api/v5/market/tickers?instType=SPOT`);
+  return (body.data || []).map(okxTickerToBinanceShape);
+};
+
+const marketGlobal = async () => {
+  const data = await fetchJson(`${COINPAPRIKA}/global`);
+  return {
+    total_market_cap: { usd: data.market_cap_usd },
+    total_volume: { usd: data.volume_24h_usd },
+    market_cap_percentage: {
+      btc: data.bitcoin_dominance_percentage,
+      eth: data.ethereum_dominance_percentage,
+    },
+    market_cap_change_percentage_24h_usd: data.market_cap_change_24h,
+    active_cryptocurrencies: data.cryptocurrencies_number,
+    markets: data.markets_number,
+  };
+};
+
+const marketSearch = async (url) => {
+  const q = url.searchParams.get("q");
+  if (!q) throw httpError(400, "q is required");
+  try {
+    return await fetchJson(`${COINGECKO}/search?${new URLSearchParams({ query: q })}`);
+  } catch {
+    return { coins: [] };
+  }
+};
+
+const technicalScoreFromIndicators = (ind = {}, price = 0) => {
+  let score = 0;
+  let weight = 0;
+
+  if (ind.rsi != null) {
+    weight += 1;
+    if (ind.rsi < 30) score += 80;
+    else if (ind.rsi > 70) score -= 80;
+    else score += (50 - Number(ind.rsi)) * -2;
+  }
+
+  if (ind.macd != null && ind.macd_signal != null) {
+    weight += 1;
+    score += clamp((Number(ind.macd) - Number(ind.macd_signal)) * 200, -60, 60);
+  }
+
+  if (ind.ema20 != null && ind.ema50 != null) {
+    weight += 1;
+    score += Number(ind.ema20) > Number(ind.ema50) ? 40 : -40;
+  }
+
+  if (ind.ema50 != null && ind.ema200 != null) {
+    weight += 1;
+    score += Number(ind.ema50) > Number(ind.ema200) ? 30 : -30;
+  }
+
+  if (ind.bb_upper != null && ind.bb_lower != null) {
+    weight += 1;
+    if (price > Number(ind.bb_upper)) score -= 30;
+    else if (price < Number(ind.bb_lower)) score += 30;
+  }
+
+  if (ind.adx != null && Number(ind.adx) > 25) {
+    score *= 1.1;
+  }
+
+  return weight === 0 ? 0 : clamp((score / Math.max(weight, 1)) * 1.2, -100, 100);
+};
+
+const verdictFromScore = (score) => {
+  if (score >= 60) return "strong_buy";
+  if (score >= 25) return "buy";
+  if (score <= -60) return "strong_sell";
+  if (score <= -25) return "sell";
+  return "neutral";
+};
+
+const buildSystemPrompt = (market) =>
+  [
+    `You are MarketDesk AI, a senior quantitative analyst specializing in ${market} markets.`,
+    "You explain technical setups crisply and never give blanket financial advice.",
+    "You consider RSI, MACD, EMAs, Bollinger Bands, ADX, ATR, volume, and recent price action together.",
+    "You MUST respond with ONLY valid JSON, no markdown fences, no prose outside JSON.",
+    'Schema strictly: {"verdict":"strong_buy|buy|neutral|sell|strong_sell","confidence":0..1,"summary":"2-3 sentence executive summary","trend":"uptrend|downtrend|sideways","short_term_outlook":"1-2 sentences about next few hours/days","medium_term_outlook":"1-2 sentences about next 1-4 weeks","patterns":[{"name":"string","direction":"bullish|bearish|neutral","confidence":0..1,"description":"short"}],"key_levels":{"support":[num,num],"resistance":[num,num]},"risk_notes":"1-2 sentences about invalidation / risk"}',
+  ].join(" ");
+
+const buildUserPrompt = (req, techScore) => {
+  const indicators = Object.fromEntries(
+    Object.entries(req.indicators || {}).filter(([, value]) => value !== null && value !== undefined)
+  );
+  const candles = (req.candles || []).slice(-30).map((c) =>
+    [
+      c.t,
+      Number(c.o).toFixed(4),
+      Number(c.h).toFixed(4),
+      Number(c.l).toFixed(4),
+      Number(c.c).toFixed(4),
+      Number(c.v).toFixed(2),
+    ].join(",")
+  );
+  return [
+    `Symbol: ${req.symbol} (${req.market || "crypto"}) | timeframe: ${req.timeframe || "1h"}`,
+    `Current price: ${req.current_price}`,
+    `24h change: ${req.change_24h ?? null}`,
+    `Heuristic composite tech score (engine pre-compute, range -100..100): ${techScore.toFixed(1)}`,
+    `Indicators: ${JSON.stringify(indicators)}`,
+    `Last ${candles.length} candles (t,o,h,l,c,v):`,
+    candles.join("\n"),
+    req.user_context ? `User note: ${req.user_context}` : "",
+    "Return ONLY the JSON object.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+};
+
+const parseAiJson = (raw) => {
+  const text = String(raw || "").trim();
+  const fenced = text.match(/```(?:json)?\s*(\{[\s\S]*\})\s*```/);
+  const candidate = fenced ? fenced[1] : text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1);
+  if (!candidate || !candidate.startsWith("{")) {
+    throw new Error(`No JSON object in AI response: ${text.slice(0, 200)}`);
+  }
+  return JSON.parse(candidate);
+};
+
+const callClaude = async (systemPrompt, userText) => {
+  const apiKey = getEnv("ANTHROPIC_API_KEY") || getEnv("EMERGENT_LLM_KEY");
+  if (!apiKey) {
+    throw httpError(502, "ANTHROPIC_API_KEY or EMERGENT_LLM_KEY is missing from Netlify environment variables");
+  }
+
+  const baseUrl = (getEnv("ANTHROPIC_BASE_URL") || "https://api.anthropic.com").replace(/\/+$/, "");
+  const model = getEnv("CLAUDE_MODEL") || DEFAULT_CLAUDE_MODEL;
+  const response = await fetch(`${baseUrl}/v1/messages`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "anthropic-version": "2023-06-01",
+      "x-api-key": apiKey,
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: 2000,
+      system: systemPrompt,
+      messages: [{ role: "user", content: userText }],
+    }),
+  });
+
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw httpError(response.status, body?.error?.message || JSON.stringify(body));
+  }
+
+  const firstText = (body.content || []).find((part) => part.type === "text")?.text;
+  if (!firstText) {
+    throw httpError(502, "Claude returned an empty response");
+  }
+  return firstText;
+};
+
+const analyze = async (request) => {
+  const req = await requestJson(request);
+  if (!req.symbol) throw httpError(400, "symbol is required");
+  if (req.current_price == null) throw httpError(400, "current_price is required");
+
+  const techScore = technicalScoreFromIndicators(req.indicators, Number(req.current_price));
+  const raw = await callClaude(buildSystemPrompt(req.market || "crypto"), buildUserPrompt(req, techScore));
+  const data = parseAiJson(raw);
+
+  const verdictMap = {
+    strong_buy: 80,
+    buy: 40,
+    neutral: 0,
+    sell: -40,
+    strong_sell: -80,
+  };
+  const aiVerdict = data.verdict || "neutral";
+  const confidence = Number(data.confidence ?? 0.65);
+  const aiScore = (verdictMap[aiVerdict] ?? 0) * confidence;
+  const combinedScore = techScore * 0.45 + aiScore * 0.55;
+
+  const keyLevels = typeof data.key_levels === "object" && data.key_levels ? data.key_levels : {};
+  keyLevels.support ||= [];
+  keyLevels.resistance ||= [];
+
+  return {
+    id: crypto.randomUUID(),
+    symbol: req.symbol,
+    verdict: verdictFromScore(combinedScore),
+    confidence,
+    summary: String(data.summary || "").slice(0, 600),
+    trend: data.trend || "sideways",
+    short_term_outlook: String(data.short_term_outlook || "").slice(0, 400),
+    medium_term_outlook: String(data.medium_term_outlook || "").slice(0, 400),
+    patterns: (data.patterns || []).slice(0, 6).map((pattern) => ({
+      name: String(pattern.name || "pattern").slice(0, 80),
+      direction: pattern.direction || "neutral",
+      confidence: Number(pattern.confidence ?? 0.5),
+      description: String(pattern.description || "").slice(0, 300),
+    })),
+    key_levels: keyLevels,
+    risk_notes: String(data.risk_notes || "").slice(0, 400),
+    technical_score: Number(techScore.toFixed(2)),
+    ai_score: Number(aiScore.toFixed(2)),
+    combined_score: Number(combinedScore.toFixed(2)),
+  };
+};
+
+const chat = async (request) => {
+  const req = await requestJson(request);
+  if (!req.session_id) throw httpError(400, "session_id is required");
+  if (!req.message) throw httpError(400, "message is required");
+  const system = [
+    "You are MarketDesk AI, a concise quantitative trading copilot.",
+    "Answer in the user's language. Keep replies under 200 words unless a chart or list helps.",
+    "Never fabricate exact prices you don't have; use the provided context.",
+    "Always remind that this is not financial advice when giving directional opinions.",
+  ].join(" ");
+  const context = req.context ? `\nContext: ${JSON.stringify(req.context).slice(0, 1500)}` : "";
+  const symbol = req.symbol ? `\nSymbol: ${req.symbol}` : "";
+  const reply = await callClaude(system, `${req.message}${symbol}${context}`);
+  return { session_id: req.session_id, reply: reply.trim() };
+};
+
+const handle = async (request) => {
+  const url = new URL(request.url);
+  const path = routePath(request);
+
+  if (request.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: corsHeaders(request) });
+  }
+
+  if (request.method === "GET" && path === "/health") {
+    return json({ status: "ok", service: "marketdesk-ai", runtime: "netlify-functions", model: DEFAULT_CLAUDE_MODEL }, 200, request);
+  }
+  if (request.method === "GET" && path === "/market/klines") return json(await marketKlines(url), 200, request);
+  if (request.method === "GET" && path === "/market/ticker24h") return json(await marketTicker24h(url), 200, request);
+  if (request.method === "GET" && path === "/market/global") return json(await marketGlobal(), 200, request);
+  if (request.method === "GET" && path === "/market/search") return json(await marketSearch(url), 200, request);
+  if (request.method === "POST" && path === "/analyze") return json(await analyze(request), 200, request);
+  if (request.method === "POST" && path === "/chat") return json(await chat(request), 200, request);
+
+  return json({ detail: "Not found" }, 404, request);
+};
+
+export default async (request) => {
+  try {
+    return withCors(await handle(request), request);
+  } catch (error) {
+    return json({ detail: error.message || "Internal server error" }, error.status || 500, request);
+  }
+};
+
+export const config = {
+  path: "/api/*",
+};

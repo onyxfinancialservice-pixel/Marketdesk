@@ -1,0 +1,40 @@
+import React from "react";
+import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { AuthProvider } from "@/context/AuthContext";
+import ProtectedRoute from "@/components/ProtectedRoute";
+import Layout from "@/components/Layout";
+import AuthPage from "@/pages/Auth";
+import Dashboard from "@/pages/Dashboard";
+import Markets from "@/pages/Markets";
+import AssetDetail from "@/pages/AssetDetail";
+import Watchlists from "@/pages/Watchlists";
+import Alerts from "@/pages/Alerts";
+import HistoryPage from "@/pages/History";
+import SettingsPage from "@/pages/Settings";
+
+const withLayout = (node) => (
+  <ProtectedRoute>
+    <Layout>{node}</Layout>
+  </ProtectedRoute>
+);
+
+function App() {
+  return (
+    <AuthProvider>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/auth" element={<AuthPage />} />
+          <Route path="/" element={withLayout(<Dashboard />)} />
+          <Route path="/markets" element={withLayout(<Markets />)} />
+          <Route path="/asset/:symbol" element={withLayout(<AssetDetail />)} />
+          <Route path="/watchlists" element={withLayout(<Watchlists />)} />
+          <Route path="/alerts" element={withLayout(<Alerts />)} />
+          <Route path="/history" element={withLayout(<HistoryPage />)} />
+          <Route path="/settings" element={withLayout(<SettingsPage />)} />
+        </Routes>
+      </BrowserRouter>
+    </AuthProvider>
+  );
+}
+
+export default App;

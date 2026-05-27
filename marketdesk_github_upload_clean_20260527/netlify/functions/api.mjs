@@ -824,14 +824,34 @@ const handle = async (request) => {
   return json({ detail: "Not found" }, 404, request);
 };
 
-export default async (request) => {
-  try {
-    return withCors(await handle(request), request);
-  } catch (error) {
-    return json({ detail: error.message || "Internal server error" }, error.status || 500, request);
-  }
-};
+export async function handler(event) {
+  const protocol = event.headers?.["x-forwarded-proto"] || "https";
+  const host = event.headers?.host || "localhost";
+  const rawUrl = event.rawUrl || `${protocol}://${host}${event.path || "/"}`;
+  const request = new Request(rawUrl, {
+    method: event.httpMethod || event.requestContext?.http?.method || "GET",
+    headers: event.headers || {},
+    body: event.body
+      ? (event.isBase64Encoded ? Buffer.from(event.body, "base64") : event.body)
+      : undefined,
+  });
 
-export const config = {
-  path: "/api/*",
-};
+  const response = await (async () => {
+    try {
+      return withCors(await handle(request), request);
+    } catch (error) {
+      return json({ detail: error.message || "Internal server error" }, error.status || 500, request);
+    }
+  })();
+
+  const headers = {};
+  response.headers.forEach((value, key) => {
+    headers[key] = value;
+  });
+
+  return {
+    statusCode: response.status,
+    headers,
+    body: await response.text(),
+  };
+}

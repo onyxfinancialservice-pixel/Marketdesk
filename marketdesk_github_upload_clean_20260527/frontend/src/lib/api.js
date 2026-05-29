@@ -18,3 +18,8 @@ export async function chatWithAI(payload) {
   const { data } = await apiClient.post("/chat", payload);
   return data;
 }
+
+export async function runPBMBrain(payload) {
+  const { data } = await apiClient.post("/brain/analyze", payload);
+  return data;
+}

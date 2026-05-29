@@ -131,6 +131,43 @@ create table if not exists public.education_videos (
   created_at timestamptz not null default now()
 );
 
+create table if not exists public.pbm_brain_runs (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  question text,
+  router_topic text not null default 'general',
+  expert text not null default 'PBM Router',
+  setup_score numeric,
+  confidence numeric,
+  summary text,
+  recommendations jsonb not null default '[]'::jsonb,
+  risks jsonb not null default '[]'::jsonb,
+  payload jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.pbm_brain_memories (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  memory_type text not null default 'note',
+  title text not null,
+  content text,
+  weight numeric not null default 1,
+  payload jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.pbm_brain_exports (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  label text not null,
+  period_start timestamptz,
+  period_end timestamptz,
+  record_count integer not null default 0,
+  payload jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+
 create index if not exists analysis_history_user_created_idx
   on public.analysis_history (user_id, created_at desc);
 create index if not exists alerts_user_active_idx
@@ -145,6 +182,12 @@ create index if not exists payout_records_user_created_idx
   on public.payout_records (user_id, created_at desc);
 create index if not exists education_videos_created_idx
   on public.education_videos (created_at desc);
+create index if not exists pbm_brain_runs_user_created_idx
+  on public.pbm_brain_runs (user_id, created_at desc);
+create index if not exists pbm_brain_memories_user_created_idx
+  on public.pbm_brain_memories (user_id, created_at desc);
+create index if not exists pbm_brain_exports_user_created_idx
+  on public.pbm_brain_exports (user_id, created_at desc);
 
 -- =========== RLS ===========
 
@@ -158,6 +201,9 @@ alter table public.journal_entries enable row level security;
 alter table public.payout_accounts enable row level security;
 alter table public.payout_records enable row level security;
 alter table public.education_videos enable row level security;
+alter table public.pbm_brain_runs enable row level security;
+alter table public.pbm_brain_memories enable row level security;
+alter table public.pbm_brain_exports enable row level security;
 
 -- helper: drop then create policies (idempotent)
 do $$
@@ -167,7 +213,7 @@ begin
     select schemaname, tablename, policyname
     from pg_policies
     where schemaname='public'
-      and tablename in ('user_settings','watchlists','watchlist_items','alerts','analysis_history','social_posts','journal_entries','payout_accounts','payout_records','education_videos')
+      and tablename in ('user_settings','watchlists','watchlist_items','alerts','analysis_history','social_posts','journal_entries','payout_accounts','payout_records','education_videos','pbm_brain_runs','pbm_brain_memories','pbm_brain_exports')
   loop
     execute format('drop policy if exists %I on %I.%I', r.policyname, r.schemaname, r.tablename);
   end loop;
@@ -262,6 +308,24 @@ create policy "own delete education_videos"
   on public.education_videos for delete
   to authenticated
   using ((select auth.uid()) = user_id);
+
+create policy "own pbm_brain_runs"
+  on public.pbm_brain_runs for all
+  to authenticated
+  using ((select auth.uid()) = user_id)
+  with check ((select auth.uid()) = user_id);
+
+create policy "own pbm_brain_memories"
+  on public.pbm_brain_memories for all
+  to authenticated
+  using ((select auth.uid()) = user_id)
+  with check ((select auth.uid()) = user_id);
+
+create policy "own pbm_brain_exports"
+  on public.pbm_brain_exports for all
+  to authenticated
+  using ((select auth.uid()) = user_id)
+  with check ((select auth.uid()) = user_id);
 
 -- =========== Triggers ===========
 

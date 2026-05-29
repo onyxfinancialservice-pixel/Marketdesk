@@ -804,6 +804,154 @@ const chat = async (request) => {
   return { session_id: req.session_id, reply: reply.trim() };
 };
 
+const routeBrainExpert = (question = "", profile = {}) => {
+  const text = `${question} ${JSON.stringify(profile).slice(0, 800)}`.toLowerCase();
+  if (/(payout|funded|drawdown|loss limit|risk|rr|stop|sizing)/.test(text)) {
+    return { router_topic: "risk", expert: "Risk / Drawdown Expert" };
+  }
+  if (/(journal|mistake|psychology|discipline|fomo|revenge|habit)/.test(text)) {
+    return { router_topic: "journal", expert: "Journal Coach" };
+  }
+  if (/(education|lesson|video|learn|course|training)/.test(text)) {
+    return { router_topic: "education", expert: "Education Expert" };
+  }
+  if (/(social|position|screenshot|setup|entry|exit|trade)/.test(text)) {
+    return { router_topic: "setup", expert: "Setup Quality Expert" };
+  }
+  if (/(forex|eurusd|gbpusd|usdjpy|indices|spx|nasdaq|crypto|btc|eth)/.test(text)) {
+    return { router_topic: "market", expert: "Market Regime Expert" };
+  }
+  return { router_topic: "router", expert: "PBM Router Head" };
+};
+
+const summarizeBrainData = (req) => {
+  const journal = Array.isArray(req.journal) ? req.journal : [];
+  const analyses = Array.isArray(req.analyses) ? req.analyses : [];
+  const socialPosts = Array.isArray(req.social_posts) ? req.social_posts : [];
+  const payouts = Array.isArray(req.payout_accounts) ? req.payout_accounts : [];
+  const memories = Array.isArray(req.memories) ? req.memories : [];
+  const pnlRows = journal
+    .map((entry) => Number(entry.pnl))
+    .filter((value) => Number.isFinite(value));
+  const wins = pnlRows.filter((value) => value > 0).length;
+  const totalPnl = pnlRows.reduce((sum, value) => sum + value, 0);
+  const losses = pnlRows.filter((value) => value < 0);
+  const symbols = [...new Set(journal.map((entry) => entry.symbol).filter(Boolean))].slice(0, 8);
+  return {
+    journal_count: journal.length,
+    analysis_count: analyses.length,
+    social_post_count: socialPosts.length,
+    payout_account_count: payouts.length,
+    memory_count: memories.length,
+    total_pnl: Number(totalPnl.toFixed(2)),
+    win_rate: pnlRows.length ? Number(((wins / pnlRows.length) * 100).toFixed(1)) : null,
+    average_pnl: pnlRows.length ? Number((totalPnl / pnlRows.length).toFixed(2)) : null,
+    loss_count: losses.length,
+    symbols,
+  };
+};
+
+const scoreBrainProfile = (profile) => {
+  let score = 50;
+  if (profile.journal_count >= 20) score += 12;
+  else if (profile.journal_count >= 5) score += 6;
+  else score -= 8;
+  if (profile.win_rate != null) score += clamp((profile.win_rate - 50) * 0.45, -15, 15);
+  if (profile.total_pnl > 0) score += 8;
+  if (profile.total_pnl < 0) score -= 8;
+  if (profile.memory_count > 0) score += 4;
+  if (profile.social_post_count > 0) score += 3;
+  return Math.round(clamp(score, 0, 100));
+};
+
+const brainFallback = (req, profile, route) => {
+  const setupScore = scoreBrainProfile(profile);
+  const recommendations = [];
+  const risks = [];
+
+  if (profile.journal_count < 10) {
+    recommendations.push("Feed PBM Brain with at least 10-20 journal entries before trusting pattern-level conclusions.");
+  } else {
+    recommendations.push("Segment your next review by symbol and session so the strongest and weakest setups become visible.");
+  }
+  if (profile.win_rate != null && profile.win_rate < 45) {
+    recommendations.push("Tag losing trades by mistake type: early entry, no confirmation, stop too tight, or news volatility.");
+    risks.push("Recent journal data suggests execution quality is not stable enough for aggressive sizing.");
+  }
+  if (profile.total_pnl < 0) {
+    recommendations.push("Run a drawdown review before adding new risk; focus on loss clusters, not single trades.");
+  }
+  if (profile.social_post_count > 0) {
+    recommendations.push("Use your posted position screenshots as setup examples and attach outcome labels after the trade closes.");
+  }
+  if (!recommendations.length) {
+    recommendations.push("Keep adding structured journal records; PBM Brain will become more personal as the memory grows.");
+  }
+  if (profile.journal_count < 5) risks.push("Low sample size: this is a coaching read, not a statistical model yet.");
+  if (!risks.length) risks.push("Model risk remains high because live market regimes can change faster than the stored sample.");
+
+  return {
+    router_topic: route.router_topic,
+    expert: route.expert,
+    setup_score: setupScore,
+    confidence: profile.journal_count >= 20 ? 0.72 : profile.journal_count >= 5 ? 0.58 : 0.42,
+    summary: `${route.expert} reviewed ${profile.journal_count} journal entries, ${profile.analysis_count} AI analyses, and ${profile.social_post_count} position posts. The current PBM Brain score is ${setupScore}/100; treat it as a learning score until more labeled outcomes are stored.`,
+    recommendations: recommendations.slice(0, 5),
+    risks: risks.slice(0, 4),
+    next_memory: "Add entry/exit, timeframe, setup label, and final outcome to each posted position so PBM Brain can learn your real edge.",
+  };
+};
+
+const brainPrompt = (req, profile, route) => [
+  "You are PBM Brain: an app-level Mixture-of-Experts router for a trader workspace.",
+  `Router selected: ${route.expert} (${route.router_topic}).`,
+  "Use the user's journal, social position posts, payout accounts, analysis history, and memories.",
+  "Do not claim to be a trained LoRA/CNN model yet; this is the first learning loop.",
+  "Give practical coaching and data-quality next steps. No financial advice.",
+  'Return ONLY JSON with schema: {"router_topic":"string","expert":"string","setup_score":0..100,"confidence":0..1,"summary":"short","recommendations":["string"],"risks":["string"],"next_memory":"string"}',
+  `Question: ${req.question || "Review my trading profile."}`,
+  `Profile: ${JSON.stringify(profile)}`,
+  `Recent journal: ${JSON.stringify((req.journal || []).slice(0, 20)).slice(0, 5000)}`,
+  `Recent analyses: ${JSON.stringify((req.analyses || []).slice(0, 12)).slice(0, 3000)}`,
+  `Recent social posts: ${JSON.stringify((req.social_posts || []).slice(0, 12)).slice(0, 2500)}`,
+  `Payout accounts: ${JSON.stringify((req.payout_accounts || []).slice(0, 12)).slice(0, 2500)}`,
+  `Memories: ${JSON.stringify((req.memories || []).slice(0, 12)).slice(0, 2500)}`,
+].join("\n");
+
+const brainAnalyze = async (request) => {
+  const req = await requestJson(request);
+  const profile = summarizeBrainData(req);
+  const route = routeBrainExpert(req.question, profile);
+  const apiKey = getEnv("ANTHROPIC_API_KEY") || getEnv("EMERGENT_LLM_KEY");
+  let data = brainFallback(req, profile, route);
+
+  if (apiKey) {
+    try {
+      const raw = await callClaude("You are PBM Brain. Return only valid JSON.", brainPrompt(req, profile, route));
+      const parsed = parseAiJson(raw);
+      data = {
+        ...data,
+        ...parsed,
+        router_topic: parsed.router_topic || route.router_topic,
+        expert: parsed.expert || route.expert,
+        recommendations: Array.isArray(parsed.recommendations) ? parsed.recommendations.slice(0, 6) : data.recommendations,
+        risks: Array.isArray(parsed.risks) ? parsed.risks.slice(0, 5) : data.risks,
+        setup_score: clamp(Number(parsed.setup_score ?? data.setup_score), 0, 100),
+        confidence: clamp(Number(parsed.confidence ?? data.confidence), 0, 1),
+      };
+    } catch {
+      data = brainFallback(req, profile, route);
+    }
+  }
+
+  return {
+    id: crypto.randomUUID(),
+    mode: apiKey ? "expert-router-ai" : "expert-router-fallback",
+    profile,
+    ...data,
+  };
+};
+
 const handle = async (request) => {
   const url = new URL(request.url);
   const path = routePath(request);
@@ -821,6 +969,7 @@ const handle = async (request) => {
   if (request.method === "GET" && path === "/market/search") return json(await marketSearch(url), 200, request);
   if (request.method === "POST" && path === "/analyze") return json(await analyze(request), 200, request);
   if (request.method === "POST" && path === "/chat") return json(await chat(request), 200, request);
+  if (request.method === "POST" && path === "/brain/analyze") return json(await brainAnalyze(request), 200, request);
 
   return json({ detail: "Not found" }, 404, request);
 };

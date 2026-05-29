@@ -9,6 +9,7 @@ import {
   BookOpen,
   WalletCards,
   GraduationCap,
+  BrainCircuit,
   History,
   Settings,
   LogOut,
@@ -25,6 +26,7 @@ const NAV = [
   { to: "/journal", label: "Journal", icon: BookOpen, testid: "nav-journal" },
   { to: "/payout-tracker", label: "Payout Tracker", icon: WalletCards, testid: "nav-payout-tracker" },
   { to: "/education", label: "Education", icon: GraduationCap, testid: "nav-education" },
+  { to: "/pbm-brain", label: "PBM Brain", icon: BrainCircuit, testid: "nav-pbm-brain" },
   { to: "/history", label: "AI History", icon: History, testid: "nav-history" },
   { to: "/settings", label: "Settings", icon: Settings, testid: "nav-settings" },
 ];

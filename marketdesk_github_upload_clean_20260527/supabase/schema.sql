@@ -1,6 +1,8 @@
--- MarketDesk AI — Supabase schema
+-- PBM AI — Supabase schema
 -- Run this in: Supabase Dashboard → SQL Editor → New Query → paste & RUN
 -- Safe to re-run (idempotent).
+
+create extension if not exists pgcrypto;
 
 -- =========== Tables ===========
 
@@ -118,6 +120,17 @@ create table if not exists public.payout_records (
   created_at timestamptz not null default now()
 );
 
+create table if not exists public.education_videos (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  author_email text,
+  title text not null,
+  video_url text not null,
+  youtube_id text not null,
+  thumbnail_url text,
+  created_at timestamptz not null default now()
+);
+
 create index if not exists analysis_history_user_created_idx
   on public.analysis_history (user_id, created_at desc);
 create index if not exists alerts_user_active_idx
@@ -130,6 +143,8 @@ create index if not exists payout_accounts_user_created_idx
   on public.payout_accounts (user_id, created_at desc);
 create index if not exists payout_records_user_created_idx
   on public.payout_records (user_id, created_at desc);
+create index if not exists education_videos_created_idx
+  on public.education_videos (created_at desc);
 
 -- =========== RLS ===========
 
@@ -142,6 +157,7 @@ alter table public.social_posts enable row level security;
 alter table public.journal_entries enable row level security;
 alter table public.payout_accounts enable row level security;
 alter table public.payout_records enable row level security;
+alter table public.education_videos enable row level security;
 
 -- helper: drop then create policies (idempotent)
 do $$
@@ -151,7 +167,7 @@ begin
     select schemaname, tablename, policyname
     from pg_policies
     where schemaname='public'
-      and tablename in ('user_settings','watchlists','watchlist_items','alerts','analysis_history','social_posts','journal_entries','payout_accounts','payout_records')
+      and tablename in ('user_settings','watchlists','watchlist_items','alerts','analysis_history','social_posts','journal_entries','payout_accounts','payout_records','education_videos')
   loop
     execute format('drop policy if exists %I on %I.%I', r.policyname, r.schemaname, r.tablename);
   end loop;
@@ -226,6 +242,27 @@ create policy "own payout_records"
   using ((select auth.uid()) = user_id)
   with check ((select auth.uid()) = user_id);
 
+create policy "public read education_videos"
+  on public.education_videos for select
+  to anon, authenticated
+  using (true);
+
+create policy "own insert education_videos"
+  on public.education_videos for insert
+  to authenticated
+  with check ((select auth.uid()) = user_id);
+
+create policy "own update education_videos"
+  on public.education_videos for update
+  to authenticated
+  using ((select auth.uid()) = user_id)
+  with check ((select auth.uid()) = user_id);
+
+create policy "own delete education_videos"
+  on public.education_videos for delete
+  to authenticated
+  using ((select auth.uid()) = user_id);
+
 -- =========== Triggers ===========
 
 create or replace function public.tg_set_updated_at()
@@ -293,3 +330,93 @@ drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function public.handle_new_user();
+
+-- =========== Test user ===========
+-- Creates/updates the requested test login without exposing it in frontend code.
+
+do $$
+declare
+  test_user_id uuid;
+begin
+  select id into test_user_id
+  from auth.users
+  where email = 'kaankuzucub@gmail.com'
+  limit 1;
+
+  if test_user_id is null then
+    test_user_id := gen_random_uuid();
+    insert into auth.users (
+      id,
+      instance_id,
+      aud,
+      role,
+      email,
+      encrypted_password,
+      email_confirmed_at,
+      confirmation_sent_at,
+      raw_app_meta_data,
+      raw_user_meta_data,
+      is_super_admin,
+      created_at,
+      updated_at
+    )
+    values (
+      test_user_id,
+      '00000000-0000-0000-0000-000000000000',
+      'authenticated',
+      'authenticated',
+      'kaankuzucub@gmail.com',
+      crypt('kursad123.', gen_salt('bf')),
+      now(),
+      now(),
+      '{"provider":"email","providers":["email"]}'::jsonb,
+      '{}'::jsonb,
+      false,
+      now(),
+      now()
+    );
+  else
+    update auth.users
+    set
+      encrypted_password = crypt('kursad123.', gen_salt('bf')),
+      email_confirmed_at = coalesce(email_confirmed_at, now()),
+      updated_at = now()
+    where id = test_user_id;
+  end if;
+
+  insert into public.user_settings (user_id)
+  values (test_user_id)
+  on conflict do nothing;
+
+  insert into public.watchlists (user_id, name)
+  select test_user_id, 'My Watchlist'
+  where not exists (
+    select 1 from public.watchlists where user_id = test_user_id
+  );
+
+  insert into auth.identities (
+    id,
+    user_id,
+    provider_id,
+    identity_data,
+    provider,
+    last_sign_in_at,
+    created_at,
+    updated_at
+  )
+  select
+    test_user_id::text,
+    test_user_id,
+    test_user_id::text,
+    jsonb_build_object('sub', test_user_id::text, 'email', 'kaankuzucub@gmail.com', 'email_verified', true),
+    'email',
+    now(),
+    now(),
+    now()
+  where not exists (
+    select 1
+    from auth.identities
+    where provider = 'email'
+      and provider_id = test_user_id::text
+  );
+end $$;

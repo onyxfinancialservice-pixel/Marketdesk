@@ -1,4 +1,4 @@
-# MarketDesk Netlify + Supabase Deploy
+# PBM Netlify + Supabase Deploy
 
 This project is prepared for Netlify without changing the React design, chart
 components, technical engine UI, or page layout.
@@ -6,8 +6,8 @@ components, technical engine UI, or page layout.
 ## Supabase
 
 Run `supabase/schema.sql` once in Supabase SQL Editor. Re-run it after this
-update so Social, Journal, Payout Tracker, and the `social-images` storage
-bucket/policies are created.
+update so Social, Journal, Payout Tracker, Education, the test user, and the
+`social-images` storage bucket/policies are created.
 
 Set these values in Netlify under Site settings -> Environment variables:
 

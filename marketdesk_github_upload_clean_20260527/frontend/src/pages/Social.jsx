@@ -104,7 +104,7 @@ export default function SocialPage() {
       <div>
         <div className="text-[11px] tracking-[0.1em] uppercase font-semibold text-zinc-500">Community</div>
         <h1 className="text-4xl font-heading font-extrabold tracking-tight text-zinc-950 mt-1">Social</h1>
-        <p className="text-sm text-zinc-500 mt-1.5">Shared position snapshots from MarketDesk traders.</p>
+        <p className="text-sm text-zinc-500 mt-1.5">Shared position snapshots from PBM traders.</p>
       </div>
 
       <div className="grid xl:grid-cols-[420px_1fr] gap-5">

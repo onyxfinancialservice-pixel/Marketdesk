@@ -1,4 +1,4 @@
-# MarketDesk AI
+# PBM AI
 
 Modern fintech trading dashboard with React, Supabase Auth/Postgres, a
 technical indicator engine, live crypto/forex/indices market data, and a
@@ -14,7 +14,7 @@ charts, technical panels, or frontend behavior.
 - Netlify static redirects: `frontend/public/_redirects`
 - Netlify API function: `netlify/functions/api.mjs`
 - Supabase schema: `supabase/schema.sql`
-- Social, journal, and payout tables/storage: `supabase/schema.sql`
+- Social, journal, payout, and education tables/storage: `supabase/schema.sql`
 - Local FastAPI backend reference: `backend/server.py`
 
 Read `NETLIFY_SUPABASE_DEPLOY.md` before deploying.
@@ -66,7 +66,8 @@ For Netlify production, no separate `BACKEND_PROXY_URL` is required.
 
 Run `supabase/schema.sql` in Supabase SQL Editor. The schema creates the
 settings, watchlists, alerts, analysis history, social feed, journal, payout
-tracker, and `social-images` storage bucket with RLS/storage policies.
+tracker, education videos, and `social-images` storage bucket with RLS/storage
+policies.
 
 ## Security
 

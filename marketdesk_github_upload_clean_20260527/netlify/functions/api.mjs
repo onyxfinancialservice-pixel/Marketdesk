@@ -92,7 +92,7 @@ const fetchJson = async (url, options = {}) => {
   const response = await fetch(url, {
     ...options,
     headers: {
-      "user-agent": "MarketDesk/1.0",
+      "user-agent": "PBM/1.0",
       ...(options.headers || {}),
     },
   });
@@ -286,11 +286,12 @@ const fetchYahooChartQuote = async (symbol) => {
 
 const yahooRangeForInterval = (interval) => {
   const tf = String(interval || "1h").toLowerCase();
-  if (tf.endsWith("m")) return "5d";
-  if (tf.endsWith("h")) return "1mo";
-  if (tf === "1w") return "2y";
+  if (tf === "1m") return "7d";
+  if (tf.endsWith("m")) return "60d";
+  if (tf.endsWith("h")) return "730d";
+  if (tf === "1w") return "5y";
   if (tf === "1mo") return "5y";
-  return "1y";
+  return "5y";
 };
 
 const mapYahooInterval = (interval) => {
@@ -658,7 +659,7 @@ const verdictFromScore = (score) => {
 
 const buildSystemPrompt = (market) =>
   [
-    `You are MarketDesk AI, a senior quantitative analyst specializing in ${market} markets.`,
+    `You are PBM AI, a senior quantitative analyst specializing in ${market} markets.`,
     "You explain technical setups crisply and never give blanket financial advice.",
     "You consider RSI, MACD, EMAs, Bollinger Bands, ADX, ATR, volume, and recent price action together.",
     "You MUST respond with ONLY valid JSON, no markdown fences, no prose outside JSON.",
@@ -792,7 +793,7 @@ const chat = async (request) => {
   if (!req.session_id) throw httpError(400, "session_id is required");
   if (!req.message) throw httpError(400, "message is required");
   const system = [
-    "You are MarketDesk AI, a concise quantitative trading copilot.",
+    "You are PBM AI, a concise quantitative trading copilot.",
     "Answer in the user's language. Keep replies under 200 words unless a chart or list helps.",
     "Never fabricate exact prices you don't have; use the provided context.",
     "Always remind that this is not financial advice when giving directional opinions.",
@@ -812,7 +813,7 @@ const handle = async (request) => {
   }
 
   if (request.method === "GET" && path === "/health") {
-    return json({ status: "ok", service: "marketdesk-ai", runtime: "netlify-functions", model: DEFAULT_CLAUDE_MODEL }, 200, request);
+    return json({ status: "ok", service: "pbm-ai", runtime: "netlify-functions", model: DEFAULT_CLAUDE_MODEL }, 200, request);
   }
   if (request.method === "GET" && path === "/market/klines") return json(await marketKlines(url), 200, request);
   if (request.method === "GET" && path === "/market/ticker24h") return json(await marketTicker24h(url), 200, request);

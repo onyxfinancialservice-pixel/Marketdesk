@@ -12,6 +12,7 @@ import Alerts from "@/pages/Alerts";
 import SocialPage from "@/pages/Social";
 import JournalPage from "@/pages/Journal";
 import PayoutTrackerPage from "@/pages/PayoutTracker";
+import EducationPage from "@/pages/Education";
 import HistoryPage from "@/pages/History";
 import SettingsPage from "@/pages/Settings";
 
@@ -35,6 +36,7 @@ function App() {
           <Route path="/social" element={withLayout(<SocialPage />)} />
           <Route path="/journal" element={withLayout(<JournalPage />)} />
           <Route path="/payout-tracker" element={withLayout(<PayoutTrackerPage />)} />
+          <Route path="/education" element={withLayout(<EducationPage />)} />
           <Route path="/history" element={withLayout(<HistoryPage />)} />
           <Route path="/settings" element={withLayout(<SettingsPage />)} />
         </Routes>

@@ -53,7 +53,7 @@ export default function AuthPage() {
               <Sparkles className="w-5 h-5 text-zinc-950" strokeWidth={2} />
             </div>
             <div>
-              <div className="font-heading text-lg font-extrabold tracking-tight leading-none">MarketDesk</div>
+              <div className="font-heading text-lg font-extrabold tracking-tight leading-none">PBM</div>
               <div className="text-[10px] tracking-[0.18em] uppercase text-zinc-400 mt-1">AI Trading Terminal</div>
             </div>
           </div>
@@ -92,7 +92,7 @@ export default function AuthPage() {
             <div className="w-9 h-9 rounded-md bg-zinc-950 flex items-center justify-center">
               <Sparkles className="w-5 h-5 text-white" strokeWidth={2} />
             </div>
-            <div className="font-heading text-lg font-extrabold tracking-tight">MarketDesk</div>
+            <div className="font-heading text-lg font-extrabold tracking-tight">PBM</div>
           </div>
           <div className="mb-8">
             <h1 className="text-3xl font-heading font-extrabold tracking-tight text-zinc-950">
@@ -164,7 +164,7 @@ export default function AuthPage() {
           </form>
 
           <div className="mt-6 text-center text-sm text-zinc-500">
-            {mode === "signin" ? "New to MarketDesk?" : "Already have an account?"}{" "}
+            {mode === "signin" ? "New to PBM?" : "Already have an account?"}{" "}
             <button
               onClick={() => { setMode(mode === "signin" ? "signup" : "signin"); setError(null); setInfo(null); }}
               data-testid="auth-mode-toggle"

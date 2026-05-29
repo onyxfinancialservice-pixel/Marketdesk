@@ -3,6 +3,26 @@ import { supabase } from "@/lib/supabase";
 
 const AuthContext = createContext(null);
 
+async function ensureUserBootstrap(user) {
+  if (!user?.id) return;
+  await supabase.from("user_settings").upsert({
+    user_id: user.id,
+    default_timeframe: "1h",
+    default_market: "crypto",
+    theme: "light",
+  }, { onConflict: "user_id", ignoreDuplicates: true });
+
+  const { data: lists } = await supabase
+    .from("watchlists")
+    .select("id")
+    .eq("user_id", user.id)
+    .limit(1);
+
+  if (!lists || lists.length === 0) {
+    await supabase.from("watchlists").insert({ user_id: user.id, name: "My Watchlist" });
+  }
+}
+
 export function AuthProvider({ children }) {
   const [session, setSession] = useState(null);
   const [user, setUser] = useState(null);
@@ -14,11 +34,13 @@ export function AuthProvider({ children }) {
       if (!mounted) return;
       setSession(data.session);
       setUser(data.session?.user ?? null);
+      if (data.session?.user) ensureUserBootstrap(data.session.user).catch(() => {});
       setLoading(false);
     });
     const { data: sub } = supabase.auth.onAuthStateChange((_event, sess) => {
       setSession(sess);
       setUser(sess?.user ?? null);
+      if (sess?.user) ensureUserBootstrap(sess.user).catch(() => {});
     });
     return () => {
       mounted = false;
@@ -27,12 +49,14 @@ export function AuthProvider({ children }) {
   }, []);
 
   const signIn = async (email, password) => {
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    const { data, error } = await supabase.auth.signInWithPassword({ email: email.trim().toLowerCase(), password });
     if (error) throw error;
+    if (data.user) await ensureUserBootstrap(data.user);
   };
   const signUp = async (email, password) => {
-    const { error } = await supabase.auth.signUp({ email, password });
+    const { data, error } = await supabase.auth.signUp({ email: email.trim().toLowerCase(), password });
     if (error) throw error;
+    if (data.user) await ensureUserBootstrap(data.user);
   };
   const signOut = async () => {
     await supabase.auth.signOut();

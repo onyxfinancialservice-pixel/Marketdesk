@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { ArrowUpRight, ArrowDownRight, BookmarkPlus, BookmarkCheck, BarChart3, CandlestickChart } from "lucide-react";
 import PriceChart from "@/components/PriceChart";
+import TradingViewChart from "@/components/TradingViewChart";
 import TechnicalPanel from "@/components/TechnicalPanel";
 import AIAnalysisPanel from "@/components/AIAnalysisPanel";
 import { fetchKlines, fetchTicker24h, TIMEFRAMES, getMarketLabel, getMarketType } from "@/lib/market";
@@ -19,6 +20,7 @@ export default function AssetDetail() {
   const [candles, setCandles] = useState([]);
   const [ticker, setTicker] = useState(null);
   const [chartMode, setChartMode] = useState("candles");
+  const [chartSource, setChartSource] = useState(localStorage.getItem("md.chart_source") || "pbm");
   const [analysis, setAnalysis] = useState(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState(null);
@@ -197,27 +199,48 @@ export default function AssetDetail() {
               </button>
             ))}
           </div>
-          <div className="flex items-center gap-1 bg-zinc-50 rounded-md p-0.5">
-            <button
-              onClick={() => setChartMode("candles")}
-              data-testid="chart-mode-candles"
-              className={`p-1.5 rounded transition-colors ${chartMode === "candles" ? "bg-white shadow-sm" : "hover:bg-zinc-100"}`}
-              aria-label="Candlestick"
-            >
-              <CandlestickChart className="w-4 h-4" strokeWidth={1.75} />
-            </button>
-            <button
-              onClick={() => setChartMode("area")}
-              data-testid="chart-mode-area"
-              className={`p-1.5 rounded transition-colors ${chartMode === "area" ? "bg-white shadow-sm" : "hover:bg-zinc-100"}`}
-              aria-label="Area"
-            >
-              <BarChart3 className="w-4 h-4" strokeWidth={1.75} />
-            </button>
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1 bg-zinc-50 rounded-md p-0.5">
+              {["pbm", "tradingview"].map((source) => (
+                <button
+                  key={source}
+                  onClick={() => { setChartSource(source); localStorage.setItem("md.chart_source", source); }}
+                  className={`px-3 py-1.5 text-xs font-semibold rounded transition-colors ${
+                    chartSource === source ? "bg-white text-zinc-950 shadow-sm" : "text-zinc-500 hover:text-zinc-900"
+                  }`}
+                >
+                  {source === "pbm" ? "PBM" : "TradingView"}
+                </button>
+              ))}
+            </div>
+            {chartSource === "pbm" && (
+              <div className="flex items-center gap-1 bg-zinc-50 rounded-md p-0.5">
+                <button
+                  onClick={() => setChartMode("candles")}
+                  data-testid="chart-mode-candles"
+                  className={`p-1.5 rounded transition-colors ${chartMode === "candles" ? "bg-white shadow-sm" : "hover:bg-zinc-100"}`}
+                  aria-label="Candlestick"
+                >
+                  <CandlestickChart className="w-4 h-4" strokeWidth={1.75} />
+                </button>
+                <button
+                  onClick={() => setChartMode("area")}
+                  data-testid="chart-mode-area"
+                  className={`p-1.5 rounded transition-colors ${chartMode === "area" ? "bg-white shadow-sm" : "hover:bg-zinc-100"}`}
+                  aria-label="Area"
+                >
+                  <BarChart3 className="w-4 h-4" strokeWidth={1.75} />
+                </button>
+              </div>
+            )}
           </div>
         </div>
         <div className="p-2">
-          <PriceChart candles={candles} mode={chartMode} height={380} />
+          {chartSource === "tradingview" ? (
+            <TradingViewChart symbol={symbol} timeframe={timeframe} height={380} />
+          ) : (
+            <PriceChart candles={candles} mode={chartMode} height={380} />
+          )}
         </div>
       </div>
 

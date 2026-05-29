@@ -129,3 +129,26 @@ export function getMarketLabel(symbol) {
   if (market === "index") return "Index";
   return "Crypto";
 }
+
+export function toTradingViewSymbol(symbol) {
+  const clean = String(symbol || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const market = getMarketType(clean);
+  if (market === "forex") return `FX:${clean}`;
+  if (market === "index") {
+    return {
+      SPX: "SP:SPX",
+      SP500: "SP:SPX",
+      NDX: "NASDAQ:NDX",
+      NASDAQ100: "NASDAQ:NDX",
+      DJI: "DJ:DJI",
+      DOW: "DJ:DJI",
+      IXIC: "NASDAQ:IXIC",
+      RUT: "TVC:RUT",
+      DAX: "XETR:DAX",
+      FTSE: "TVC:UKX",
+      N225: "TVC:NI225",
+    }[clean] || clean;
+  }
+  if (clean.endsWith("USDT")) return `BINANCE:${clean}`;
+  return `BINANCE:${clean}USDT`;
+}

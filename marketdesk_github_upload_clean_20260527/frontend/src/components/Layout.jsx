@@ -8,6 +8,7 @@ import {
   Users,
   BookOpen,
   WalletCards,
+  GraduationCap,
   History,
   Settings,
   LogOut,
@@ -23,6 +24,7 @@ const NAV = [
   { to: "/social", label: "Social", icon: Users, testid: "nav-social" },
   { to: "/journal", label: "Journal", icon: BookOpen, testid: "nav-journal" },
   { to: "/payout-tracker", label: "Payout Tracker", icon: WalletCards, testid: "nav-payout-tracker" },
+  { to: "/education", label: "Education", icon: GraduationCap, testid: "nav-education" },
   { to: "/history", label: "AI History", icon: History, testid: "nav-history" },
   { to: "/settings", label: "Settings", icon: Settings, testid: "nav-settings" },
 ];
@@ -46,7 +48,7 @@ export default function Layout({ children }) {
             </div>
             <div>
               <div className="font-heading text-base font-extrabold tracking-tight text-zinc-950 leading-none">
-                MarketDesk
+                PBM
               </div>
               <div className="text-[10px] tracking-[0.18em] uppercase text-zinc-500 mt-1">
                 AI Trading

@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { getAccountStatus } from "@/lib/api";
 
@@ -36,7 +36,7 @@ export function AuthProvider({ children }) {
   const [accountLoading, setAccountLoading] = useState(false);
   const [accountError, setAccountError] = useState("");
 
-  const refreshAccount = async () => {
+  const refreshAccount = useCallback(async () => {
     setAccountError("");
     const { data } = await supabase.auth.getSession();
     if (!data.session?.user) {
@@ -55,26 +55,32 @@ export function AuthProvider({ children }) {
     } finally {
       setAccountLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     let mounted = true;
-    supabase.auth.getSession().then(async ({ data }) => {
+    supabase.auth.getSession().then(({ data }) => {
       if (!mounted) return;
-      setSession(data.session);
-      setUser(data.session?.user ?? null);
-      if (data.session?.user) {
-        await ensureUserBootstrap(data.session.user).catch(() => {});
-        await refreshAccount();
-      }
+      const currentSession = data.session;
+      const currentUser = currentSession?.user ?? null;
+      setSession(currentSession);
+      setUser(currentUser);
       setLoading(false);
+      if (currentUser) {
+        ensureUserBootstrap(currentUser).catch(() => {});
+        refreshAccount().catch(() => {});
+      }
+    }).catch(() => {
+      if (mounted) setLoading(false);
     });
-    const { data: sub } = supabase.auth.onAuthStateChange(async (_event, sess) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, sess) => {
       setSession(sess);
       setUser(sess?.user ?? null);
       if (sess?.user) {
-        await ensureUserBootstrap(sess.user).catch(() => {});
-        await refreshAccount();
+        setTimeout(() => {
+          ensureUserBootstrap(sess.user).catch(() => {});
+          refreshAccount().catch(() => {});
+        }, 0);
       } else {
         setAccount(null);
       }
@@ -83,19 +89,19 @@ export function AuthProvider({ children }) {
       mounted = false;
       sub.subscription.unsubscribe();
     };
-  }, []);
+  }, [refreshAccount]);
 
   const signIn = async (email, password) => {
     const { data, error } = await supabase.auth.signInWithPassword({ email: email.trim().toLowerCase(), password });
     if (error) throw error;
     if (data.user) await ensureUserBootstrap(data.user);
-    await refreshAccount();
+    refreshAccount().catch(() => {});
   };
   const signUp = async (email, password) => {
     const { data, error } = await supabase.auth.signUp({ email: email.trim().toLowerCase(), password });
     if (error) throw error;
     if (data.user) await ensureUserBootstrap(data.user);
-    await refreshAccount();
+    refreshAccount().catch(() => {});
   };
   const signOut = async () => {
     await supabase.auth.signOut();

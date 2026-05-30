@@ -4,6 +4,7 @@ const COINPAPRIKA = "https://api.coinpaprika.com/v1";
 const COINGECKO = "https://api.coingecko.com/api/v3";
 const TWELVE = "https://api.twelvedata.com";
 const YAHOO = "https://query1.finance.yahoo.com";
+const RESEND = "https://api.resend.com/emails";
 const DEFAULT_CLAUDE_MODEL = "claude-sonnet-4-5-20250929";
 const POPULAR_CRYPTO = [
   "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
@@ -107,6 +108,231 @@ const fetchJson = async (url, options = {}) => {
     throw httpError(response.status, typeof body === "string" ? body : JSON.stringify(body));
   }
   return body;
+};
+
+const requireSupabaseAdmin = () => {
+  const url = (getEnv("SUPABASE_URL") || "").replace(/\/+$/, "");
+  const key = getEnv("SUPABASE_SERVICE_ROLE_KEY");
+  if (!url || !key) {
+    throw httpError(500, "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required for closed beta access control");
+  }
+  return { url, key };
+};
+
+const supabaseAdminJson = async (path, options = {}) => {
+  const { url, key } = requireSupabaseAdmin();
+  const response = await fetch(`${url}/rest/v1/${path.replace(/^\/+/, "")}`, {
+    ...options,
+    headers: {
+      apikey: key,
+      authorization: `Bearer ${key}`,
+      "content-type": "application/json",
+      ...(options.headers || {}),
+    },
+  });
+  const text = await response.text();
+  let body;
+  try {
+    body = text ? JSON.parse(text) : null;
+  } catch {
+    body = text;
+  }
+  if (!response.ok) {
+    throw httpError(response.status, typeof body === "string" ? body : JSON.stringify(body));
+  }
+  return body;
+};
+
+const authenticatedUser = async (request) => {
+  const auth = request.headers.get("authorization") || "";
+  const token = auth.match(/^Bearer\s+(.+)$/i)?.[1];
+  if (!token) throw httpError(401, "Sign in is required");
+  const { url, key } = requireSupabaseAdmin();
+  const response = await fetch(`${url}/auth/v1/user`, {
+    headers: {
+      apikey: key,
+      authorization: `Bearer ${token}`,
+    },
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || !body?.id || !body?.email) {
+    throw httpError(401, body?.msg || body?.error_description || "Invalid session");
+  }
+  return { id: body.id, email: String(body.email).trim().toLowerCase() };
+};
+
+const fetchBetaAccess = async (email) => {
+  const params = new URLSearchParams({
+    select: "*",
+    email: `eq.${email}`,
+    limit: "1",
+  });
+  const rows = await supabaseAdminJson(`beta_access?${params}`);
+  return Array.isArray(rows) ? rows[0] : null;
+};
+
+const requireBetaUser = async (request) => {
+  const user = await authenticatedUser(request);
+  const access = await fetchBetaAccess(user.email);
+  if (!access || access.status !== "active") {
+    throw httpError(403, "This email is not enabled for the PBM closed beta");
+  }
+  return { user, access, isAdmin: access.role === "admin" };
+};
+
+const weekStartDate = () => {
+  const now = new Date();
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const offset = (start.getUTCDay() + 6) % 7;
+  start.setUTCDate(start.getUTCDate() - offset);
+  return start.toISOString().slice(0, 10);
+};
+
+const usageState = async ({ user, access, isAdmin }, action = "ai_analysis") => {
+  const periodStart = weekStartDate();
+  const params = new URLSearchParams({
+    select: "id",
+    user_id: `eq.${user.id}`,
+    action: `eq.${action}`,
+    period_start: `eq.${periodStart}`,
+    limit: "1000",
+  });
+  const rows = await supabaseAdminJson(`usage_events?${params}`);
+  const used = Array.isArray(rows) ? rows.length : 0;
+  const limit = isAdmin ? null : Number(access.weekly_ai_limit ?? 10);
+  return {
+    action,
+    period_start: periodStart,
+    used,
+    limit,
+    remaining: limit == null ? null : Math.max(limit - used, 0),
+    is_admin: Boolean(isAdmin),
+  };
+};
+
+const ensureUsageCapacity = async (auth, action = "ai_analysis") => {
+  const state = await usageState(auth, action);
+  if (!state.is_admin && state.remaining <= 0) {
+    throw httpError(429, `Weekly AI analysis limit reached (${state.limit}/week)`);
+  }
+  return state;
+};
+
+const recordUsage = async (auth, action = "ai_analysis", metadata = {}) => {
+  if (!auth.isAdmin) {
+    await supabaseAdminJson("usage_events", {
+      method: "POST",
+      headers: { prefer: "return=minimal" },
+      body: JSON.stringify({
+        user_id: auth.user.id,
+        email: auth.user.email,
+        action,
+        period_start: weekStartDate(),
+        metadata,
+      }),
+    });
+  }
+  return usageState(auth, action);
+};
+
+const htmlEscape = (value) =>
+  String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+
+const fetchNotificationRecipients = async (senderEmail) => {
+  const params = new URLSearchParams({
+    select: "email",
+    status: "eq.active",
+    limit: "200",
+  });
+  const rows = await supabaseAdminJson(`beta_access?${params}`);
+  return (Array.isArray(rows) ? rows : [])
+    .map((row) => String(row.email || "").trim().toLowerCase())
+    .filter((email) => email && email !== senderEmail);
+};
+
+const sendSocialEmail = async (to, post, senderEmail) => {
+  const apiKey = getEnv("RESEND_API_KEY");
+  if (!apiKey) return { skipped: true, reason: "RESEND_API_KEY is not configured" };
+  const from = getEnv("PBM_EMAIL_FROM") || "PBM <onboarding@resend.dev>";
+  const siteUrl = (getEnv("PBM_SITE_URL") || getEnv("URL") || "").replace(/\/+$/, "");
+  const channelUrl = siteUrl ? `${siteUrl}/social` : "";
+  const symbol = htmlEscape(post.symbol || "PBM");
+  const timeframe = htmlEscape(post.timeframe || "1h");
+  const bias = htmlEscape(post.bias || "neutral");
+  const score = post.confidence == null || post.confidence === "" ? "" : ` / Score: ${htmlEscape(post.confidence)}`;
+  const summary = htmlEscape(post.summary || "New PBM position update is live.");
+  const imageUrl = String(post.image_url || "");
+  const safeImageUrl = /^https?:\/\//i.test(imageUrl) ? htmlEscape(imageUrl) : "";
+
+  const html = [
+    `<div style="font-family:Arial,sans-serif;background:#fafafa;padding:28px;color:#18181b">`,
+    `<div style="max-width:640px;margin:0 auto;background:#fff;border:1px solid #e4e4e7;border-radius:8px;overflow:hidden">`,
+    `<div style="padding:18px 20px;border-bottom:1px solid #f4f4f5">`,
+    `<div style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:#71717a;font-weight:700">PBM Social</div>`,
+    `<h1 style="font-size:24px;line-height:1.2;margin:6px 0 0;color:#09090b">${symbol} position update</h1>`,
+    `</div>`,
+    safeImageUrl ? `<img src="${safeImageUrl}" alt="${symbol}" style="display:block;width:100%;height:auto;border-bottom:1px solid #f4f4f5" />` : "",
+    `<div style="padding:20px">`,
+    `<div style="font-size:14px;color:#52525b;margin-bottom:12px">${timeframe} / ${bias}${score}</div>`,
+    `<p style="font-size:15px;line-height:1.6;color:#27272a;margin:0 0 18px">${summary}</p>`,
+    channelUrl ? `<a href="${htmlEscape(channelUrl)}" style="display:inline-block;background:#09090b;color:#fff;text-decoration:none;border-radius:6px;padding:10px 14px;font-size:14px;font-weight:600">Open PBM Social</a>` : "",
+    `<div style="font-size:12px;color:#a1a1aa;margin-top:18px">Shared by ${htmlEscape(senderEmail)}</div>`,
+    `</div></div></div>`,
+  ].join("");
+
+  const response = await fetch(RESEND, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${apiKey}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      from,
+      to: [to],
+      subject: `PBM Social: ${post.symbol || "New position update"}`,
+      html,
+    }),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    return { ok: false, email: to, detail: body?.message || body?.error || JSON.stringify(body) };
+  }
+  return { ok: true, email: to, id: body?.id };
+};
+
+const notifySocialPost = async (request) => {
+  const auth = await requireBetaUser(request);
+  if (!auth.isAdmin && auth.access.can_post_social !== true) {
+    throw httpError(403, "This account cannot publish PBM social notifications");
+  }
+  const post = await requestJson(request);
+  if (!post.symbol) throw httpError(400, "symbol is required");
+  const recipients = await fetchNotificationRecipients(auth.user.email);
+  if (!recipients.length) {
+    return { skipped: true, reason: "No active beta recipients found", sent: 0, failed: 0 };
+  }
+  if (!getEnv("RESEND_API_KEY")) {
+    return { skipped: true, reason: "RESEND_API_KEY is not configured", recipients: recipients.length, sent: 0, failed: 0 };
+  }
+
+  const results = [];
+  for (const recipient of recipients) {
+    results.push(await sendSocialEmail(recipient, post, auth.user.email));
+  }
+  const sent = results.filter((item) => item.ok).length;
+  const failed = results.filter((item) => item.ok === false).length;
+  return {
+    skipped: false,
+    recipients: recipients.length,
+    sent,
+    failed,
+    errors: results.filter((item) => item.ok === false).slice(0, 5),
+  };
 };
 
 const twelveKey = () => getEnv("TWELVE_DATA_API_KEY") || getEnv("TWELVEDATA_API_KEY");
@@ -657,11 +883,17 @@ const verdictFromScore = (score) => {
   return "neutral";
 };
 
-const buildSystemPrompt = (market) =>
+const languageInstruction = (language) =>
+  String(language || "en").toLowerCase().startsWith("tr")
+    ? "Write every user-facing string in Turkish."
+    : "Write every user-facing string in English.";
+
+const buildSystemPrompt = (market, language = "en") =>
   [
     `You are PBM AI, a senior quantitative analyst specializing in ${market} markets.`,
     "You explain technical setups crisply and never give blanket financial advice.",
     "You consider RSI, MACD, EMAs, Bollinger Bands, ADX, ATR, volume, and recent price action together.",
+    languageInstruction(language),
     "You MUST respond with ONLY valid JSON, no markdown fences, no prose outside JSON.",
     'Schema strictly: {"verdict":"strong_buy|buy|neutral|sell|strong_sell","confidence":0..1,"summary":"2-3 sentence executive summary","trend":"uptrend|downtrend|sideways","short_term_outlook":"1-2 sentences about next few hours/days","medium_term_outlook":"1-2 sentences about next 1-4 weeks","patterns":[{"name":"string","direction":"bullish|bearish|neutral","confidence":0..1,"description":"short"}],"key_levels":{"support":[num,num],"resistance":[num,num]},"risk_notes":"1-2 sentences about invalidation / risk"}',
   ].join(" ");
@@ -741,12 +973,14 @@ const callClaude = async (systemPrompt, userText) => {
 };
 
 const analyze = async (request) => {
+  const auth = await requireBetaUser(request);
+  await ensureUsageCapacity(auth, "ai_analysis");
   const req = await requestJson(request);
   if (!req.symbol) throw httpError(400, "symbol is required");
   if (req.current_price == null) throw httpError(400, "current_price is required");
 
   const techScore = technicalScoreFromIndicators(req.indicators, Number(req.current_price));
-  const raw = await callClaude(buildSystemPrompt(req.market || "crypto"), buildUserPrompt(req, techScore));
+  const raw = await callClaude(buildSystemPrompt(req.market || "crypto", req.language || "en"), buildUserPrompt(req, techScore));
   const data = parseAiJson(raw);
 
   const verdictMap = {
@@ -785,28 +1019,37 @@ const analyze = async (request) => {
     technical_score: Number(techScore.toFixed(2)),
     ai_score: Number(aiScore.toFixed(2)),
     combined_score: Number(combinedScore.toFixed(2)),
+    usage: await recordUsage(auth, "ai_analysis", { feature: "asset_analysis", symbol: req.symbol, timeframe: req.timeframe }),
   };
 };
 
 const chat = async (request) => {
+  const auth = await requireBetaUser(request);
+  await ensureUsageCapacity(auth, "ai_analysis");
   const req = await requestJson(request);
   if (!req.session_id) throw httpError(400, "session_id is required");
   if (!req.message) throw httpError(400, "message is required");
+  const language = req.language || "en";
   const system = [
     "You are PBM AI, a concise quantitative trading copilot.",
-    "Answer in the user's language. Keep replies under 200 words unless a chart or list helps.",
+    languageInstruction(language),
+    "Keep replies under 200 words unless a chart or list helps.",
     "Never fabricate exact prices you don't have; use the provided context.",
     "Always remind that this is not financial advice when giving directional opinions.",
   ].join(" ");
   const context = req.context ? `\nContext: ${JSON.stringify(req.context).slice(0, 1500)}` : "";
   const symbol = req.symbol ? `\nSymbol: ${req.symbol}` : "";
   const reply = await callClaude(system, `${req.message}${symbol}${context}`);
-  return { session_id: req.session_id, reply: reply.trim() };
+  return {
+    session_id: req.session_id,
+    reply: reply.trim(),
+    usage: await recordUsage(auth, "ai_analysis", { feature: "chat", symbol: req.symbol || null }),
+  };
 };
 
 const routeBrainExpert = (question = "", profile = {}) => {
   const text = `${question} ${JSON.stringify(profile).slice(0, 800)}`.toLowerCase();
-  if (/(payout|funded|drawdown|loss limit|risk|rr|stop|sizing)/.test(text)) {
+  if (/(drawdown|risk|rr|stop|sizing)/.test(text)) {
     return { router_topic: "risk", expert: "Risk / Drawdown Expert" };
   }
   if (/(journal|mistake|psychology|discipline|fomo|revenge|habit)/.test(text)) {
@@ -828,7 +1071,6 @@ const summarizeBrainData = (req) => {
   const journal = Array.isArray(req.journal) ? req.journal : [];
   const analyses = Array.isArray(req.analyses) ? req.analyses : [];
   const socialPosts = Array.isArray(req.social_posts) ? req.social_posts : [];
-  const payouts = Array.isArray(req.payout_accounts) ? req.payout_accounts : [];
   const memories = Array.isArray(req.memories) ? req.memories : [];
   const pnlRows = journal
     .map((entry) => Number(entry.pnl))
@@ -841,7 +1083,6 @@ const summarizeBrainData = (req) => {
     journal_count: journal.length,
     analysis_count: analyses.length,
     social_post_count: socialPosts.length,
-    payout_account_count: payouts.length,
     memory_count: memories.length,
     total_pnl: Number(totalPnl.toFixed(2)),
     win_rate: pnlRows.length ? Number(((wins / pnlRows.length) * 100).toFixed(1)) : null,
@@ -905,7 +1146,7 @@ const brainFallback = (req, profile, route) => {
 const brainPrompt = (req, profile, route) => [
   "You are PBM Brain: an app-level Mixture-of-Experts router for a trader workspace.",
   `Router selected: ${route.expert} (${route.router_topic}).`,
-  "Use the user's journal, social position posts, payout accounts, analysis history, and memories.",
+  "Use the user's journal, social position posts, analysis history, and memories.",
   "Do not claim to be a trained LoRA/CNN model yet; this is the first learning loop.",
   "Give practical coaching and data-quality next steps. No financial advice.",
   'Return ONLY JSON with schema: {"router_topic":"string","expert":"string","setup_score":0..100,"confidence":0..1,"summary":"short","recommendations":["string"],"risks":["string"],"next_memory":"string"}',
@@ -914,7 +1155,6 @@ const brainPrompt = (req, profile, route) => [
   `Recent journal: ${JSON.stringify((req.journal || []).slice(0, 20)).slice(0, 5000)}`,
   `Recent analyses: ${JSON.stringify((req.analyses || []).slice(0, 12)).slice(0, 3000)}`,
   `Recent social posts: ${JSON.stringify((req.social_posts || []).slice(0, 12)).slice(0, 2500)}`,
-  `Payout accounts: ${JSON.stringify((req.payout_accounts || []).slice(0, 12)).slice(0, 2500)}`,
   `Memories: ${JSON.stringify((req.memories || []).slice(0, 12)).slice(0, 2500)}`,
 ].join("\n");
 
@@ -970,6 +1210,7 @@ const handle = async (request) => {
   if (request.method === "POST" && path === "/analyze") return json(await analyze(request), 200, request);
   if (request.method === "POST" && path === "/chat") return json(await chat(request), 200, request);
   if (request.method === "POST" && path === "/brain/analyze") return json(await brainAnalyze(request), 200, request);
+  if (request.method === "POST" && path === "/social/notify") return json(await notifySocialPost(request), 200, request);
 
   return json({ detail: "Not found" }, 404, request);
 };

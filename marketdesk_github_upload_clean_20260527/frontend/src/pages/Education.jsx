@@ -4,22 +4,49 @@ import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/context/AuthContext";
 import { fmtDate } from "@/lib/format";
 
+const YOUTUBE_ID_RE = /^[a-zA-Z0-9_-]{11}$/;
+
+const normalizeYouTubeId = (value) => {
+  const candidate = String(value || "").trim().replace(/[^a-zA-Z0-9_-].*$/, "");
+  return YOUTUBE_ID_RE.test(candidate) ? candidate : "";
+};
+
 const extractYouTubeId = (url) => {
   const raw = String(url || "").trim();
   if (!raw) return "";
+
+  const directId = normalizeYouTubeId(raw);
+  if (directId) return directId;
+
+  const looseMatch = raw.match(/(?:v=|youtu\.be\/|embed\/|shorts\/|live\/)([a-zA-Z0-9_-]{11})/);
+  if (looseMatch) return looseMatch[1];
+
   try {
-    const parsed = new URL(raw);
-    if (parsed.hostname.includes("youtu.be")) return parsed.pathname.replace("/", "").slice(0, 32);
-    if (parsed.searchParams.get("v")) return parsed.searchParams.get("v").slice(0, 32);
-    const embedMatch = parsed.pathname.match(/\/(?:embed|shorts)\/([^/?]+)/);
-    if (embedMatch) return embedMatch[1].slice(0, 32);
+    const hasScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw);
+    const parsed = new URL(hasScheme ? raw : `https://${raw}`);
+    const host = parsed.hostname.replace(/^www\./, "");
+
+    if (host === "youtu.be") return normalizeYouTubeId(parsed.pathname.split("/").filter(Boolean)[0]);
+
+    if (host.endsWith("youtube.com") || host.endsWith("youtube-nocookie.com")) {
+      const videoParam = parsed.searchParams.get("v");
+      if (videoParam) return normalizeYouTubeId(videoParam);
+
+      const nestedUrl = parsed.searchParams.get("u");
+      if (parsed.pathname === "/attribution_link" && nestedUrl) return extractYouTubeId(nestedUrl);
+
+      const parts = parsed.pathname.split("/").filter(Boolean);
+      const keyedIndex = parts.findIndex((part) => ["embed", "shorts", "live", "v"].includes(part));
+      if (keyedIndex >= 0) return normalizeYouTubeId(parts[keyedIndex + 1]);
+    }
   } catch {
-    return raw.length <= 32 ? raw : "";
+    return "";
   }
+
   return "";
 };
 
-const thumbnailFor = (youtubeId) => `https://img.youtube.com/vi/${youtubeId}/hqdefault.jpg`;
+const thumbnailFor = (youtubeId) => `https://i.ytimg.com/vi/${youtubeId}/hqdefault.jpg`;
 
 export default function EducationPage() {
   const { user } = useAuth();
@@ -54,23 +81,24 @@ export default function EducationPage() {
     setError("");
     const youtubeId = extractYouTubeId(form.video_url);
     if (!form.title.trim() || !youtubeId) {
-      setError("Title and a valid YouTube link are required.");
+      setError("Video name and a valid YouTube video link are required.");
       return;
     }
 
     setSaving(true);
-    const { error: insertError } = await supabase.from("education_videos").insert({
+    const { data: createdVideo, error: insertError } = await supabase.from("education_videos").insert({
       user_id: user.id,
       author_email: user.email,
       title: form.title.trim(),
       video_url: form.video_url.trim(),
       youtube_id: youtubeId,
       thumbnail_url: thumbnailFor(youtubeId),
-    });
+    }).select("*").single();
 
     if (insertError) setError(insertError.message);
     else {
       setForm({ title: "", video_url: "" });
+      if (createdVideo?.id) setActiveId(createdVideo.id);
       await reload();
     }
     setSaving(false);

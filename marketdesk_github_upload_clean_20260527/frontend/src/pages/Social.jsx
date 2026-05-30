@@ -4,8 +4,12 @@ import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/context/AuthContext";
 import { getMarketType } from "@/lib/market";
 import { fmtDate } from "@/lib/format";
+import { notifySocialPost } from "@/lib/api";
 
 const BIASES = ["bullish", "bearish", "neutral"];
+const CHANNEL_ADMIN_EMAILS = ["kaankuzucub@gmail.com", "trader@marketdesk.test"];
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+const FALLBACK_IMAGE_BYTES = 4 * 1024 * 1024;
 
 const cleanSymbol = (value) => String(value || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 
@@ -16,12 +20,30 @@ const safeFileName = (name) =>
     .replace(/^-+|-+$/g, "")
     .slice(-80) || "position.png";
 
+const fileToDataUrl = (imageFile) =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error("Could not read image file."));
+    reader.readAsDataURL(imageFile);
+  });
+
+const friendlyUploadError = (uploadError) => {
+  const message = uploadError?.message || "Image upload failed.";
+  if (/bucket|not found|row-level security|policy|permission/i.test(message)) {
+    return "Social image storage is not ready in Supabase. Run the updated Supabase SQL, then try again.";
+  }
+  return message;
+};
+
 export default function SocialPage() {
   const { user } = useAuth();
+  const canPost = CHANNEL_ADMIN_EMAILS.includes(String(user?.email || "").toLowerCase());
   const [posts, setPosts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [file, setFile] = useState(null);
   const [form, setForm] = useState({
     symbol: "BTCUSDT",
@@ -48,9 +70,22 @@ export default function SocialPage() {
   const createPost = async (event) => {
     event.preventDefault();
     setError("");
+    setNotice("");
+    if (!canPost) {
+      setError("This PBM channel is read-only for your account.");
+      return;
+    }
     const symbol = cleanSymbol(form.symbol);
     if (!symbol || !file) {
       setError("Symbol and image are required.");
+      return;
+    }
+    if (!file.type?.startsWith("image/")) {
+      setError("Please choose an image file.");
+      return;
+    }
+    if (file.size > MAX_IMAGE_BYTES) {
+      setError("Image is too large. Please upload an image under 8 MB.");
       return;
     }
 
@@ -59,16 +94,32 @@ export default function SocialPage() {
     const upload = await supabase.storage.from("social-images").upload(imagePath, file, {
       cacheControl: "3600",
       upsert: false,
+      contentType: file.type || "image/png",
     });
 
+    let imageUrl = "";
+    let storedImagePath = imagePath;
+
     if (upload.error) {
-      setSaving(false);
-      setError(upload.error.message);
-      return;
+      if (file.size > FALLBACK_IMAGE_BYTES) {
+        setSaving(false);
+        setError(friendlyUploadError(upload.error));
+        return;
+      }
+      storedImagePath = null;
+      try {
+        imageUrl = await fileToDataUrl(file);
+      } catch (readError) {
+        setSaving(false);
+        setError(readError.message || friendlyUploadError(upload.error));
+        return;
+      }
+    } else {
+      const { data: publicData } = supabase.storage.from("social-images").getPublicUrl(imagePath);
+      imageUrl = publicData.publicUrl;
     }
 
-    const { data: publicData } = supabase.storage.from("social-images").getPublicUrl(imagePath);
-    const { error: insertError } = await supabase.from("social_posts").insert({
+    const { data: createdPost, error: insertError } = await supabase.from("social_posts").insert({
       user_id: user.id,
       author_email: user.email,
       symbol,
@@ -77,14 +128,28 @@ export default function SocialPage() {
       bias: form.bias,
       confidence: form.confidence === "" ? null : Number(form.confidence),
       summary: form.summary.trim(),
-      image_url: publicData.publicUrl,
-      image_path: imagePath,
-    });
+      image_url: imageUrl,
+      image_path: storedImagePath,
+    }).select("*").single();
 
     if (insertError) {
-      await supabase.storage.from("social-images").remove([imagePath]);
+      if (storedImagePath) await supabase.storage.from("social-images").remove([storedImagePath]);
       setError(insertError.message);
     } else {
+      notifySocialPost({
+        post_id: createdPost?.id,
+        symbol,
+        timeframe: form.timeframe.trim() || "1h",
+        bias: form.bias,
+        confidence: form.confidence === "" ? null : Number(form.confidence),
+        summary: form.summary.trim(),
+        image_url: imageUrl,
+      })
+        .then((result) => {
+          if (result?.skipped) setNotice("Shared. Email notification is not configured yet.");
+          else setNotice(`Shared. Email notification sent to ${result?.sent || 0} traders.`);
+        })
+        .catch(() => setNotice("Shared. Email notification could not be sent."));
       setFile(null);
       setForm({ symbol: "BTCUSDT", timeframe: "1h", bias: "neutral", confidence: "", summary: "" });
       await reload();
@@ -110,71 +175,80 @@ export default function SocialPage() {
       <div className="grid xl:grid-cols-[420px_1fr] gap-5">
         <div className="bg-white border border-zinc-200 rounded-lg overflow-hidden">
           <div className="px-5 py-3.5 border-b border-zinc-100 text-[11px] tracking-[0.1em] uppercase font-semibold text-zinc-500">
-            New post
+            {canPost ? "New post" : "PBM channel"}
           </div>
-          <form onSubmit={createPost} className="p-5 space-y-3" data-testid="social-post-form">
-            <div className="grid grid-cols-2 gap-3">
-              <input
-                value={form.symbol}
-                onChange={(event) => setForm({ ...form, symbol: event.target.value })}
-                placeholder="Symbol"
-                className="px-3 py-2 text-sm bg-white border border-zinc-200 rounded-md focus:outline-none focus:ring-2 focus:ring-zinc-900"
+          {canPost ? (
+            <form onSubmit={createPost} className="p-5 space-y-3" data-testid="social-post-form">
+              <div className="grid grid-cols-2 gap-3">
+                <input
+                  value={form.symbol}
+                  onChange={(event) => setForm({ ...form, symbol: event.target.value })}
+                  placeholder="Symbol"
+                  className="px-3 py-2 text-sm bg-white border border-zinc-200 rounded-md focus:outline-none focus:ring-2 focus:ring-zinc-900"
+                />
+                <input
+                  value={form.timeframe}
+                  onChange={(event) => setForm({ ...form, timeframe: event.target.value })}
+                  placeholder="Timeframe"
+                  className="px-3 py-2 text-sm bg-white border border-zinc-200 rounded-md focus:outline-none focus:ring-2 focus:ring-zinc-900"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <select
+                  value={form.bias}
+                  onChange={(event) => setForm({ ...form, bias: event.target.value })}
+                  className="px-3 py-2 text-sm bg-white border border-zinc-200 rounded-md focus:outline-none focus:ring-2 focus:ring-zinc-900"
+                >
+                  {BIASES.map((bias) => (
+                    <option key={bias} value={bias}>{bias}</option>
+                  ))}
+                </select>
+                <input
+                  value={form.confidence}
+                  onChange={(event) => setForm({ ...form, confidence: event.target.value })}
+                  type="number"
+                  step="any"
+                  min="-100"
+                  max="100"
+                  placeholder="Score"
+                  className="px-3 py-2 text-sm bg-white border border-zinc-200 rounded-md focus:outline-none focus:ring-2 focus:ring-zinc-900"
+                />
+              </div>
+              <textarea
+                value={form.summary}
+                onChange={(event) => setForm({ ...form, summary: event.target.value })}
+                rows={4}
+                placeholder="Summary"
+                className="w-full px-3 py-2 text-sm bg-white border border-zinc-200 rounded-md focus:outline-none focus:ring-2 focus:ring-zinc-900 resize-none"
               />
-              <input
-                value={form.timeframe}
-                onChange={(event) => setForm({ ...form, timeframe: event.target.value })}
-                placeholder="Timeframe"
-                className="px-3 py-2 text-sm bg-white border border-zinc-200 rounded-md focus:outline-none focus:ring-2 focus:ring-zinc-900"
-              />
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <select
-                value={form.bias}
-                onChange={(event) => setForm({ ...form, bias: event.target.value })}
-                className="px-3 py-2 text-sm bg-white border border-zinc-200 rounded-md focus:outline-none focus:ring-2 focus:ring-zinc-900"
+              <label className="flex items-center justify-center gap-2 px-3 py-3 border border-dashed border-zinc-300 rounded-md text-sm text-zinc-500 hover:border-zinc-500 hover:text-zinc-900 transition-colors cursor-pointer">
+                <ImagePlus className="w-4 h-4" strokeWidth={1.75} />
+                <span className="truncate">{file ? file.name : "Add position image"}</span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(event) => setFile(event.target.files?.[0] || null)}
+                />
+              </label>
+              {error && <div className="text-xs text-rose-600">{error}</div>}
+              {notice && <div className="text-xs text-emerald-700">{notice}</div>}
+              <button
+                type="submit"
+                disabled={saving}
+                className="w-full inline-flex items-center justify-center gap-2 bg-zinc-950 text-white rounded-md text-sm font-medium h-10 hover:bg-zinc-800 transition-colors disabled:opacity-60"
               >
-                {BIASES.map((bias) => (
-                  <option key={bias} value={bias}>{bias}</option>
-                ))}
-              </select>
-              <input
-                value={form.confidence}
-                onChange={(event) => setForm({ ...form, confidence: event.target.value })}
-                type="number"
-                step="any"
-                min="-100"
-                max="100"
-                placeholder="Score"
-                className="px-3 py-2 text-sm bg-white border border-zinc-200 rounded-md focus:outline-none focus:ring-2 focus:ring-zinc-900"
-              />
+                <Send className="w-4 h-4" strokeWidth={1.75} />
+                Share
+              </button>
+            </form>
+          ) : (
+            <div className="p-5">
+              <div className="text-sm text-zinc-700 leading-relaxed">
+                PBM position updates are published here. Your account can view the channel feed.
+              </div>
             </div>
-            <textarea
-              value={form.summary}
-              onChange={(event) => setForm({ ...form, summary: event.target.value })}
-              rows={4}
-              placeholder="Summary"
-              className="w-full px-3 py-2 text-sm bg-white border border-zinc-200 rounded-md focus:outline-none focus:ring-2 focus:ring-zinc-900 resize-none"
-            />
-            <label className="flex items-center justify-center gap-2 px-3 py-3 border border-dashed border-zinc-300 rounded-md text-sm text-zinc-500 hover:border-zinc-500 hover:text-zinc-900 transition-colors cursor-pointer">
-              <ImagePlus className="w-4 h-4" strokeWidth={1.75} />
-              <span className="truncate">{file ? file.name : "Add position image"}</span>
-              <input
-                type="file"
-                accept="image/*"
-                className="hidden"
-                onChange={(event) => setFile(event.target.files?.[0] || null)}
-              />
-            </label>
-            {error && <div className="text-xs text-rose-600">{error}</div>}
-            <button
-              type="submit"
-              disabled={saving}
-              className="w-full inline-flex items-center justify-center gap-2 bg-zinc-950 text-white rounded-md text-sm font-medium h-10 hover:bg-zinc-800 transition-colors disabled:opacity-60"
-            >
-              <Send className="w-4 h-4" strokeWidth={1.75} />
-              Share
-            </button>
-          </form>
+          )}
         </div>
 
         <div className="bg-white border border-zinc-200 rounded-lg overflow-hidden">

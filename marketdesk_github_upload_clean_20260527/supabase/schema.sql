@@ -15,6 +15,28 @@ create table if not exists public.user_settings (
   updated_at timestamptz not null default now()
 );
 
+create table if not exists public.beta_access (
+  email text primary key,
+  role text not null default 'user' check (role in ('user','admin')),
+  status text not null default 'active' check (status in ('active','paused','revoked')),
+  weekly_ai_limit integer not null default 10,
+  can_post_social boolean not null default false,
+  can_add_education boolean not null default true,
+  notes text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.usage_events (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  email text not null,
+  action text not null,
+  period_start date not null,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+
 create table if not exists public.watchlists (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
@@ -168,8 +190,30 @@ create table if not exists public.pbm_brain_exports (
   created_at timestamptz not null default now()
 );
 
+-- Existing beta databases may already have older versions of these tables.
+-- Keep these additive changes idempotent so re-running the schema repairs missing fields.
+alter table public.social_posts add column if not exists author_email text;
+alter table public.social_posts add column if not exists market text not null default 'crypto';
+alter table public.social_posts add column if not exists timeframe text not null default '1h';
+alter table public.social_posts add column if not exists bias text not null default 'neutral';
+alter table public.social_posts add column if not exists confidence numeric;
+alter table public.social_posts add column if not exists summary text;
+alter table public.social_posts add column if not exists image_url text;
+alter table public.social_posts add column if not exists image_path text;
+
+alter table public.education_videos add column if not exists author_email text;
+alter table public.education_videos add column if not exists video_url text;
+alter table public.education_videos add column if not exists youtube_id text;
+alter table public.education_videos add column if not exists thumbnail_url text;
+
+alter table public.beta_access alter column can_post_social set default false;
+
 create index if not exists analysis_history_user_created_idx
   on public.analysis_history (user_id, created_at desc);
+create index if not exists beta_access_status_idx
+  on public.beta_access (status, role);
+create index if not exists usage_events_user_period_idx
+  on public.usage_events (user_id, period_start, action, created_at desc);
 create index if not exists alerts_user_active_idx
   on public.alerts (user_id, active);
 create index if not exists social_posts_created_idx
@@ -192,6 +236,8 @@ create index if not exists pbm_brain_exports_user_created_idx
 -- =========== RLS ===========
 
 alter table public.user_settings enable row level security;
+alter table public.beta_access enable row level security;
+alter table public.usage_events enable row level security;
 alter table public.watchlists enable row level security;
 alter table public.watchlist_items enable row level security;
 alter table public.alerts enable row level security;
@@ -213,7 +259,7 @@ begin
     select schemaname, tablename, policyname
     from pg_policies
     where schemaname='public'
-      and tablename in ('user_settings','watchlists','watchlist_items','alerts','analysis_history','social_posts','journal_entries','payout_accounts','payout_records','education_videos','pbm_brain_runs','pbm_brain_memories','pbm_brain_exports')
+      and tablename in ('user_settings','beta_access','usage_events','watchlists','watchlist_items','alerts','analysis_history','social_posts','journal_entries','payout_accounts','payout_records','education_videos','pbm_brain_runs','pbm_brain_memories','pbm_brain_exports')
   loop
     execute format('drop policy if exists %I on %I.%I', r.policyname, r.schemaname, r.tablename);
   end loop;
@@ -224,6 +270,16 @@ create policy "own user_settings"
   to authenticated
   using ((select auth.uid()) = user_id)
   with check ((select auth.uid()) = user_id);
+
+create policy "own beta_access read"
+  on public.beta_access for select
+  to authenticated
+  using (lower(email) = lower(coalesce((select auth.jwt() ->> 'email'), '')));
+
+create policy "own usage_events read"
+  on public.usage_events for select
+  to authenticated
+  using ((select auth.uid()) = user_id);
 
 create policy "own watchlists"
   on public.watchlists for all
@@ -257,7 +313,16 @@ create policy "public read social_posts"
 create policy "own insert social_posts"
   on public.social_posts for insert
   to authenticated
-  with check ((select auth.uid()) = user_id);
+  with check (
+    (select auth.uid()) = user_id
+    and exists (
+      select 1
+      from public.beta_access access
+      where lower(access.email) = lower(coalesce((select auth.jwt() ->> 'email'), ''))
+        and access.status = 'active'
+        and (access.role = 'admin' or access.can_post_social is true)
+    )
+  );
 
 create policy "own update social_posts"
   on public.social_posts for update
@@ -341,6 +406,11 @@ create trigger user_settings_updated_at
   before update on public.user_settings
   for each row execute function public.tg_set_updated_at();
 
+drop trigger if exists beta_access_updated_at on public.beta_access;
+create trigger beta_access_updated_at
+  before update on public.beta_access
+  for each row execute function public.tg_set_updated_at();
+
 drop trigger if exists payout_accounts_updated_at on public.payout_accounts;
 create trigger payout_accounts_updated_at
   before update on public.payout_accounts
@@ -365,7 +435,17 @@ create policy "public read social images"
 create policy "authenticated upload social images"
   on storage.objects for insert
   to authenticated
-  with check (bucket_id = 'social-images' and (select auth.uid())::text = (storage.foldername(name))[1]);
+  with check (
+    bucket_id = 'social-images'
+    and (select auth.uid())::text = (storage.foldername(name))[1]
+    and exists (
+      select 1
+      from public.beta_access access
+      where lower(access.email) = lower(coalesce((select auth.jwt() ->> 'email'), ''))
+        and access.status = 'active'
+        and (access.role = 'admin' or access.can_post_social is true)
+    )
+  );
 
 create policy "own update social images"
   on storage.objects for update
@@ -377,6 +457,21 @@ create policy "own delete social images"
   on storage.objects for delete
   to authenticated
   using (bucket_id = 'social-images' and (select auth.uid())::text = (storage.foldername(name))[1]);
+
+-- =========== Closed beta defaults ===========
+
+insert into public.beta_access (email, role, status, weekly_ai_limit, can_post_social, can_add_education, notes)
+values
+  ('kaankuzucub@gmail.com', 'admin', 'active', 9999, true, true, 'PBM admin'),
+  ('trader@marketdesk.test', 'admin', 'active', 9999, true, true, 'Local test account')
+on conflict (email) do update
+set role = excluded.role,
+    status = excluded.status,
+    weekly_ai_limit = excluded.weekly_ai_limit,
+    can_post_social = excluded.can_post_social,
+    can_add_education = excluded.can_add_education,
+    notes = excluded.notes,
+    updated_at = now();
 
 -- =========== Bootstrap helper for new users ===========
 
@@ -430,7 +525,7 @@ begin
       'authenticated',
       'authenticated',
       'kaankuzucub@gmail.com',
-      crypt('kursad123.', gen_salt('bf')),
+      crypt('Kursad123.', gen_salt('bf')),
       now(),
       now(),
       '{"provider":"email","providers":["email"]}'::jsonb,
@@ -442,7 +537,7 @@ begin
   else
     update auth.users
     set
-      encrypted_password = crypt('kursad123.', gen_salt('bf')),
+      encrypted_password = crypt('Kursad123.', gen_salt('bf')),
       email_confirmed_at = coalesce(email_confirmed_at, now()),
       updated_at = now()
     where id = test_user_id;

@@ -5,7 +5,7 @@ import { useAuth } from "@/context/AuthContext";
 import { TIMEFRAMES } from "@/lib/market";
 
 export default function Settings() {
-  const { user } = useAuth();
+  const { user, isAdmin } = useAuth();
   const [settings, setSettings] = useState({ default_timeframe: "1h", default_market: "crypto", theme: "light" });
   const [alphaKey, setAlphaKey] = useState(localStorage.getItem("md.alpha_key") || "");
   const [saving, setSaving] = useState(false);
@@ -31,6 +31,18 @@ export default function Settings() {
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   };
+
+  if (!isAdmin) {
+    return (
+      <div className="space-y-6 max-w-3xl">
+        <div>
+          <div className="text-[11px] tracking-[0.1em] uppercase font-semibold text-zinc-500">Configuration</div>
+          <h1 className="text-4xl font-heading font-extrabold tracking-tight text-zinc-950 mt-1">Settings</h1>
+          <p className="text-sm text-zinc-500 mt-1.5">This panel is only available for PBM admins.</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 max-w-3xl">

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { ImagePlus, Send, Trash2 } from "lucide-react";
+import { ImagePlus, Send, Trash2, X } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/context/AuthContext";
 import { getMarketType } from "@/lib/market";
@@ -7,7 +7,7 @@ import { fmtDate } from "@/lib/format";
 import { notifySocialPost } from "@/lib/api";
 
 const BIASES = ["bullish", "bearish", "neutral"];
-const CHANNEL_ADMIN_EMAILS = ["kaankuzucub@gmail.com", "trader@marketdesk.test"];
+const CHANNEL_AUTHOR_NAME = "kaanxbt";
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 const FALLBACK_IMAGE_BYTES = 4 * 1024 * 1024;
 
@@ -37,14 +37,15 @@ const friendlyUploadError = (uploadError) => {
 };
 
 export default function SocialPage() {
-  const { user } = useAuth();
-  const canPost = CHANNEL_ADMIN_EMAILS.includes(String(user?.email || "").toLowerCase());
+  const { user, isAdmin, access } = useAuth();
+  const canPost = Boolean(isAdmin || access?.can_post_social);
   const [posts, setPosts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [file, setFile] = useState(null);
+  const [activeImage, setActiveImage] = useState(null);
   const [form, setForm] = useState({
     symbol: "BTCUSDT",
     timeframe: "1h",
@@ -119,9 +120,10 @@ export default function SocialPage() {
       imageUrl = publicData.publicUrl;
     }
 
-    const { data: createdPost, error: insertError } = await supabase.from("social_posts").insert({
+    const { error: insertError } = await supabase.from("social_posts").insert({
       user_id: user.id,
       author_email: user.email,
+      author_nickname: CHANNEL_AUTHOR_NAME,
       symbol,
       market: getMarketType(symbol),
       timeframe: form.timeframe.trim() || "1h",
@@ -130,14 +132,13 @@ export default function SocialPage() {
       summary: form.summary.trim(),
       image_url: imageUrl,
       image_path: storedImagePath,
-    }).select("*").single();
+    });
 
     if (insertError) {
       if (storedImagePath) await supabase.storage.from("social-images").remove([storedImagePath]);
       setError(insertError.message);
     } else {
       notifySocialPost({
-        post_id: createdPost?.id,
         symbol,
         timeframe: form.timeframe.trim() || "1h",
         bias: form.bias,
@@ -263,15 +264,20 @@ export default function SocialPage() {
             <div className="grid lg:grid-cols-2 gap-4 p-5">
               {posts.map((post) => (
                 <article key={post.id} className="border border-zinc-200 rounded-lg overflow-hidden bg-white" data-testid={`social-post-${post.symbol}`}>
-                  <div className="aspect-video bg-zinc-50 border-b border-zinc-100 overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => setActiveImage(post)}
+                    className="block w-full aspect-video bg-zinc-50 border-b border-zinc-100 overflow-hidden text-left"
+                    aria-label={`Open ${post.symbol} image`}
+                  >
                     <img src={post.image_url} alt={post.symbol} className="w-full h-full object-cover" />
-                  </div>
+                  </button>
                   <div className="p-4">
                     <div className="flex items-start justify-between gap-3">
                       <div>
                         <div className="font-semibold tabular-nums text-zinc-950">{post.symbol}</div>
                         <div className="text-xs text-zinc-500 mt-0.5">
-                          {post.timeframe} / {post.author_email || "Trader"}
+                          {post.timeframe} / {post.author_nickname || (post.author_email === "kaankuzucub@gmail.com" ? CHANNEL_AUTHOR_NAME : "Trader")}
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
@@ -299,6 +305,24 @@ export default function SocialPage() {
           )}
         </div>
       </div>
+      {activeImage && (
+        <div className="fixed inset-0 bg-zinc-950/70 z-50 flex items-center justify-center p-6" onClick={() => setActiveImage(null)}>
+          <div className="bg-white border border-zinc-200 rounded-lg overflow-hidden max-w-5xl w-full" onClick={(event) => event.stopPropagation()}>
+            <div className="px-5 py-3.5 border-b border-zinc-100 flex items-center justify-between">
+              <div>
+                <div className="text-[11px] tracking-[0.1em] uppercase font-semibold text-zinc-500">Position snapshot</div>
+                <div className="font-semibold tabular-nums text-zinc-950 mt-0.5">{activeImage.symbol}</div>
+              </div>
+              <button onClick={() => setActiveImage(null)} className="p-2 text-zinc-500 hover:text-zinc-950 transition-colors" aria-label="Close image">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="bg-zinc-50">
+              <img src={activeImage.image_url} alt={activeImage.symbol} className="w-full max-h-[78vh] object-contain" />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

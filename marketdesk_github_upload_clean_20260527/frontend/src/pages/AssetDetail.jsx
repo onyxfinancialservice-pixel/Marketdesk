@@ -15,7 +15,7 @@ import { useAuth } from "@/context/AuthContext";
 export default function AssetDetail() {
   const { symbol } = useParams();
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, aiUsage, isAdmin, refreshAccount } = useAuth();
   const [timeframe, setTimeframe] = useState(localStorage.getItem("md.tf") || "1h");
   const [candles, setCandles] = useState([]);
   const [ticker, setTicker] = useState(null);
@@ -94,6 +94,7 @@ export default function AssetDetail() {
       const res = await analyzeAsset(payload);
       setAnalysis(res);
       setLastUpdated(new Date().toLocaleString());
+      if (res.usage) refreshAccount().catch(() => {});
       // Save to Supabase history
       if (user) {
         await supabase.from("analysis_history").insert({
@@ -112,7 +113,7 @@ export default function AssetDetail() {
     } finally {
       setAiLoading(false);
     }
-  }, [symbol, timeframe, ticker, indicators, candles, user, marketType]);
+  }, [symbol, timeframe, ticker, indicators, candles, user, marketType, refreshAccount]);
 
   const toggleWatchlist = async () => {
     if (!user || watchlists.length === 0) {
@@ -261,6 +262,8 @@ export default function AssetDetail() {
             error={aiError}
             onRun={runAnalysis}
             lastUpdated={lastUpdated}
+            usage={analysis?.usage || aiUsage}
+            isAdmin={isAdmin}
           />
         </div>
       </div>

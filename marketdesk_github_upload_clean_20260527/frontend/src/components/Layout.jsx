@@ -11,6 +11,7 @@ import {
   GraduationCap,
   BrainCircuit,
   History,
+  ClipboardCheck,
   Settings,
   LogOut,
   Sparkles,
@@ -27,12 +28,13 @@ const NAV = [
   { to: "/payout-tracker", label: "Payout Tracker", icon: WalletCards, testid: "nav-payout-tracker" },
   { to: "/education", label: "Education", icon: GraduationCap, testid: "nav-education" },
   { to: "/pbm-brain", label: "PBM Brain", icon: BrainCircuit, testid: "nav-pbm-brain" },
+  { to: "/ai-teaching", label: "AI Teaching", icon: ClipboardCheck, testid: "nav-ai-teaching", adminOnly: true },
   { to: "/history", label: "AI History", icon: History, testid: "nav-history" },
-  { to: "/settings", label: "Settings", icon: Settings, testid: "nav-settings" },
+  { to: "/settings", label: "Settings", icon: Settings, testid: "nav-settings", adminOnly: true },
 ];
 
 export default function Layout({ children }) {
-  const { user, signOut } = useAuth();
+  const { user, signOut, displayName, isAdmin } = useAuth();
   const navigate = useNavigate();
 
   const handleSignOut = async () => {
@@ -59,7 +61,7 @@ export default function Layout({ children }) {
           </Link>
         </div>
         <nav className="flex-1 px-3 py-4 space-y-0.5">
-          {NAV.map(({ to, label, icon: Icon, testid }) => (
+          {NAV.filter((item) => !item.adminOnly || isAdmin).map(({ to, label, icon: Icon, testid }) => (
             <NavLink
               key={to}
               to={to}
@@ -84,7 +86,7 @@ export default function Layout({ children }) {
               Signed in as
             </div>
             <div className="text-xs text-zinc-700 mt-0.5 truncate" data-testid="user-email">
-              {user?.email}
+              {displayName || user?.email}
             </div>
           </div>
           <button

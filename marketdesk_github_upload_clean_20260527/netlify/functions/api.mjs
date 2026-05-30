@@ -111,10 +111,10 @@ const fetchJson = async (url, options = {}) => {
 };
 
 const requireSupabaseAdmin = () => {
-  const url = (getEnv("SUPABASE_URL") || "").replace(/\/+$/, "");
-  const key = getEnv("SUPABASE_SERVICE_ROLE_KEY");
+  const url = (getEnv("SUPABASE_URL") || getEnv("REACT_APP_SUPABASE_URL") || "").replace(/\/+$/, "");
+  const key = getEnv("SUPABASE_SERVICE_ROLE_KEY") || getEnv("SUPABASE_SERVICE_KEY") || getEnv("SUPABASE_SERVICE_ROLE");
   if (!url || !key) {
-    throw httpError(500, "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required for closed beta access control");
+    throw httpError(500, "Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Netlify Environment Variables for PBM closed beta limits");
   }
   return { url, key };
 };
@@ -180,16 +180,13 @@ const requireBetaUser = async (request) => {
   return { user, access, isAdmin: access.role === "admin" };
 };
 
-const weekStartDate = () => {
+const dayStartDate = () => {
   const now = new Date();
-  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-  const offset = (start.getUTCDay() + 6) % 7;
-  start.setUTCDate(start.getUTCDate() - offset);
-  return start.toISOString().slice(0, 10);
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString().slice(0, 10);
 };
 
 const usageState = async ({ user, access, isAdmin }, action = "ai_analysis") => {
-  const periodStart = weekStartDate();
+  const periodStart = dayStartDate();
   const params = new URLSearchParams({
     select: "id",
     user_id: `eq.${user.id}`,
@@ -199,9 +196,10 @@ const usageState = async ({ user, access, isAdmin }, action = "ai_analysis") => 
   });
   const rows = await supabaseAdminJson(`usage_events?${params}`);
   const used = Array.isArray(rows) ? rows.length : 0;
-  const limit = isAdmin ? null : Number(access.weekly_ai_limit ?? 10);
+  const limit = isAdmin ? null : Number(access.daily_ai_limit ?? access.weekly_ai_limit ?? 10);
   return {
     action,
+    period_kind: "day",
     period_start: periodStart,
     used,
     limit,
@@ -213,7 +211,7 @@ const usageState = async ({ user, access, isAdmin }, action = "ai_analysis") => 
 const ensureUsageCapacity = async (auth, action = "ai_analysis") => {
   const state = await usageState(auth, action);
   if (!state.is_admin && state.remaining <= 0) {
-    throw httpError(429, `Weekly AI analysis limit reached (${state.limit}/week)`);
+    throw httpError(429, `Daily AI analysis limit reached (${state.limit}/day)`);
   }
   return state;
 };
@@ -227,12 +225,31 @@ const recordUsage = async (auth, action = "ai_analysis", metadata = {}) => {
         user_id: auth.user.id,
         email: auth.user.email,
         action,
-        period_start: weekStartDate(),
+        period_start: dayStartDate(),
         metadata,
       }),
     });
   }
   return usageState(auth, action);
+};
+
+const accountStatus = async (request) => {
+  const auth = await requireBetaUser(request);
+  return {
+    user: auth.user,
+    access: {
+      email: auth.access.email,
+      role: auth.access.role,
+      status: auth.access.status,
+      daily_ai_limit: Number(auth.access.daily_ai_limit ?? auth.access.weekly_ai_limit ?? 10),
+      can_post_social: Boolean(auth.access.can_post_social),
+      can_add_education: Boolean(auth.access.can_add_education),
+    },
+    is_admin: auth.isAdmin,
+    usage: {
+      ai_analysis: await usageState(auth, "ai_analysis"),
+    },
+  };
 };
 
 const htmlEscape = (value) =>
@@ -898,7 +915,23 @@ const buildSystemPrompt = (market, language = "en") =>
     'Schema strictly: {"verdict":"strong_buy|buy|neutral|sell|strong_sell","confidence":0..1,"summary":"2-3 sentence executive summary","trend":"uptrend|downtrend|sideways","short_term_outlook":"1-2 sentences about next few hours/days","medium_term_outlook":"1-2 sentences about next 1-4 weeks","patterns":[{"name":"string","direction":"bullish|bearish|neutral","confidence":0..1,"description":"short"}],"key_levels":{"support":[num,num],"resistance":[num,num]},"risk_notes":"1-2 sentences about invalidation / risk"}',
   ].join(" ");
 
-const buildUserPrompt = (req, techScore) => {
+const fetchTeachingExamples = async (symbol) => {
+  const params = new URLSearchParams({
+    select: "symbol,timeframe,outcome,feedback,lesson,created_at",
+    order: "created_at.desc",
+    limit: "12",
+  });
+  const cleanSymbol = String(symbol || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (cleanSymbol) params.set("symbol", `eq.${cleanSymbol}`);
+  try {
+    const rows = await supabaseAdminJson(`ai_teaching_feedback?${params}`);
+    return Array.isArray(rows) ? rows : [];
+  } catch {
+    return [];
+  }
+};
+
+const buildUserPrompt = (req, techScore, teachingExamples = []) => {
   const indicators = Object.fromEntries(
     Object.entries(req.indicators || {}).filter(([, value]) => value !== null && value !== undefined)
   );
@@ -920,6 +953,7 @@ const buildUserPrompt = (req, techScore) => {
     `Indicators: ${JSON.stringify(indicators)}`,
     `Last ${candles.length} candles (t,o,h,l,c,v):`,
     candles.join("\n"),
+    teachingExamples.length ? `Prior admin teaching feedback for this symbol: ${JSON.stringify(teachingExamples).slice(0, 2500)}` : "",
     req.user_context ? `User note: ${req.user_context}` : "",
     "Return ONLY the JSON object.",
   ]
@@ -980,7 +1014,11 @@ const analyze = async (request) => {
   if (req.current_price == null) throw httpError(400, "current_price is required");
 
   const techScore = technicalScoreFromIndicators(req.indicators, Number(req.current_price));
-  const raw = await callClaude(buildSystemPrompt(req.market || "crypto", req.language || "en"), buildUserPrompt(req, techScore));
+  const teachingExamples = await fetchTeachingExamples(req.symbol);
+  const raw = await callClaude(
+    buildSystemPrompt(req.market || "crypto", req.language || "en"),
+    buildUserPrompt(req, techScore, teachingExamples)
+  );
   const data = parseAiJson(raw);
 
   const verdictMap = {
@@ -1207,6 +1245,7 @@ const handle = async (request) => {
   if (request.method === "GET" && path === "/market/ticker24h") return json(await marketTicker24h(url), 200, request);
   if (request.method === "GET" && path === "/market/global") return json(await marketGlobal(), 200, request);
   if (request.method === "GET" && path === "/market/search") return json(await marketSearch(url), 200, request);
+  if (request.method === "GET" && path === "/me") return json(await accountStatus(request), 200, request);
   if (request.method === "POST" && path === "/analyze") return json(await analyze(request), 200, request);
   if (request.method === "POST" && path === "/chat") return json(await chat(request), 200, request);
   if (request.method === "POST" && path === "/brain/analyze") return json(await brainAnalyze(request), 200, request);

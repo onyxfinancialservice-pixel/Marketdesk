@@ -86,19 +86,18 @@ export default function EducationPage() {
     }
 
     setSaving(true);
-    const { data: createdVideo, error: insertError } = await supabase.from("education_videos").insert({
+    const { error: insertError } = await supabase.from("education_videos").insert({
       user_id: user.id,
       author_email: user.email,
       title: form.title.trim(),
       video_url: form.video_url.trim(),
       youtube_id: youtubeId,
       thumbnail_url: thumbnailFor(youtubeId),
-    }).select("*").single();
+    });
 
     if (insertError) setError(insertError.message);
     else {
       setForm({ title: "", video_url: "" });
-      if (createdVideo?.id) setActiveId(createdVideo.id);
       await reload();
     }
     setSaving(false);

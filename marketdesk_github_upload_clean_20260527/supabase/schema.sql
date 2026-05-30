@@ -20,6 +20,7 @@ create table if not exists public.beta_access (
   role text not null default 'user' check (role in ('user','admin')),
   status text not null default 'active' check (status in ('active','paused','revoked')),
   weekly_ai_limit integer not null default 10,
+  daily_ai_limit integer not null default 10,
   can_post_social boolean not null default false,
   can_add_education boolean not null default true,
   notes text,
@@ -84,6 +85,7 @@ create table if not exists public.social_posts (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
   author_email text,
+  author_nickname text,
   symbol text not null,
   market text not null default 'crypto',
   timeframe text not null default '1h',
@@ -190,9 +192,25 @@ create table if not exists public.pbm_brain_exports (
   created_at timestamptz not null default now()
 );
 
+create table if not exists public.ai_teaching_feedback (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  analysis_history_id uuid references public.analysis_history(id) on delete set null,
+  symbol text not null,
+  market text not null default 'crypto',
+  timeframe text not null default '1h',
+  outcome text not null default 'pending' check (outcome in ('correct','wrong','pending')),
+  feedback text,
+  lesson text,
+  payload jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+
 -- Existing beta databases may already have older versions of these tables.
 -- Keep these additive changes idempotent so re-running the schema repairs missing fields.
+alter table public.beta_access add column if not exists daily_ai_limit integer not null default 10;
 alter table public.social_posts add column if not exists author_email text;
+alter table public.social_posts add column if not exists author_nickname text;
 alter table public.social_posts add column if not exists market text not null default 'crypto';
 alter table public.social_posts add column if not exists timeframe text not null default '1h';
 alter table public.social_posts add column if not exists bias text not null default 'neutral';
@@ -207,6 +225,7 @@ alter table public.education_videos add column if not exists youtube_id text;
 alter table public.education_videos add column if not exists thumbnail_url text;
 
 alter table public.beta_access alter column can_post_social set default false;
+alter table public.beta_access alter column daily_ai_limit set default 10;
 
 create index if not exists analysis_history_user_created_idx
   on public.analysis_history (user_id, created_at desc);
@@ -232,6 +251,10 @@ create index if not exists pbm_brain_memories_user_created_idx
   on public.pbm_brain_memories (user_id, created_at desc);
 create index if not exists pbm_brain_exports_user_created_idx
   on public.pbm_brain_exports (user_id, created_at desc);
+create index if not exists ai_teaching_feedback_symbol_created_idx
+  on public.ai_teaching_feedback (symbol, created_at desc);
+create index if not exists ai_teaching_feedback_user_created_idx
+  on public.ai_teaching_feedback (user_id, created_at desc);
 
 -- =========== RLS ===========
 
@@ -250,6 +273,7 @@ alter table public.education_videos enable row level security;
 alter table public.pbm_brain_runs enable row level security;
 alter table public.pbm_brain_memories enable row level security;
 alter table public.pbm_brain_exports enable row level security;
+alter table public.ai_teaching_feedback enable row level security;
 
 -- helper: drop then create policies (idempotent)
 do $$
@@ -259,7 +283,7 @@ begin
     select schemaname, tablename, policyname
     from pg_policies
     where schemaname='public'
-      and tablename in ('user_settings','beta_access','usage_events','watchlists','watchlist_items','alerts','analysis_history','social_posts','journal_entries','payout_accounts','payout_records','education_videos','pbm_brain_runs','pbm_brain_memories','pbm_brain_exports')
+      and tablename in ('user_settings','beta_access','usage_events','watchlists','watchlist_items','alerts','analysis_history','social_posts','journal_entries','payout_accounts','payout_records','education_videos','pbm_brain_runs','pbm_brain_memories','pbm_brain_exports','ai_teaching_feedback')
   loop
     execute format('drop policy if exists %I on %I.%I', r.policyname, r.schemaname, r.tablename);
   end loop;
@@ -392,6 +416,21 @@ create policy "own pbm_brain_exports"
   using ((select auth.uid()) = user_id)
   with check ((select auth.uid()) = user_id);
 
+create policy "own ai_teaching_feedback"
+  on public.ai_teaching_feedback for all
+  to authenticated
+  using ((select auth.uid()) = user_id)
+  with check (
+    (select auth.uid()) = user_id
+    and exists (
+      select 1
+      from public.beta_access access
+      where lower(access.email) = lower(coalesce((select auth.jwt() ->> 'email'), ''))
+        and access.status = 'active'
+        and access.role = 'admin'
+    )
+  );
+
 -- =========== Triggers ===========
 
 create or replace function public.tg_set_updated_at()
@@ -460,14 +499,15 @@ create policy "own delete social images"
 
 -- =========== Closed beta defaults ===========
 
-insert into public.beta_access (email, role, status, weekly_ai_limit, can_post_social, can_add_education, notes)
+insert into public.beta_access (email, role, status, weekly_ai_limit, daily_ai_limit, can_post_social, can_add_education, notes)
 values
-  ('kaankuzucub@gmail.com', 'admin', 'active', 9999, true, true, 'PBM admin'),
-  ('trader@marketdesk.test', 'admin', 'active', 9999, true, true, 'Local test account')
+  ('kaankuzucub@gmail.com', 'admin', 'active', 9999, 9999, true, true, 'PBM admin'),
+  ('trader@marketdesk.test', 'admin', 'active', 9999, 9999, true, true, 'Local test account')
 on conflict (email) do update
 set role = excluded.role,
     status = excluded.status,
     weekly_ai_limit = excluded.weekly_ai_limit,
+    daily_ai_limit = excluded.daily_ai_limit,
     can_post_social = excluded.can_post_social,
     can_add_education = excluded.can_add_education,
     notes = excluded.notes,

@@ -23,7 +23,8 @@ function VerdictBadge({ verdict, confidence }) {
   );
 }
 
-export default function AIAnalysisPanel({ analysis, loading, onRun, lastUpdated, error }) {
+export default function AIAnalysisPanel({ analysis, loading, onRun, lastUpdated, error, usage, isAdmin }) {
+  const showUsage = !isAdmin && usage?.limit != null;
   return (
     <div className="bg-slate-50 border border-slate-200 rounded-lg overflow-hidden">
       <div className="px-6 py-4 border-b border-slate-200 bg-white/40 flex items-center justify-between">
@@ -36,9 +37,14 @@ export default function AIAnalysisPanel({ analysis, loading, onRun, lastUpdated,
             <div className="text-lg font-heading font-bold tracking-tight text-slate-900">Claude Sonnet 4.5 Analysis</div>
           </div>
         </div>
+        {showUsage && (
+          <div className="text-xs text-slate-500 tabular-nums">
+            AI left: <span className="font-semibold text-slate-900">{usage.remaining}</span>/{usage.limit} today
+          </div>
+        )}
         <button
           onClick={onRun}
-          disabled={loading}
+          disabled={loading || (showUsage && usage.remaining <= 0)}
           data-testid="run-ai-analysis-btn"
           className="inline-flex items-center gap-2 bg-slate-900 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-slate-800 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
         >

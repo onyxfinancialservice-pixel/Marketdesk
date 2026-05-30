@@ -39,3 +39,8 @@ export async function notifySocialPost(payload) {
   const { data } = await apiClient.post("/social/notify", payload);
   return data;
 }
+
+export async function getAccountStatus() {
+  const { data } = await apiClient.get("/me");
+  return data;
+}

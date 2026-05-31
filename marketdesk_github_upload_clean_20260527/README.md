@@ -1,27 +1,26 @@
-PBM hotfix - AI analysis + Education video upload
+# PBM Mobile PWA Update
 
-Upload these files to GitHub with the same paths:
+Bu paket sadece mobil menuyu ve Add to Home Screen/PWA dosyalarini ekler.
+Mevcut desktop tasarim, renk paleti, chart/AI ekranlari ve ana layout davranisi korunur.
 
-- frontend/src/lib/api.js
-- frontend/src/pages/Education.jsx
-- netlify/functions/api.mjs
-- netlify/functions/pbm.mjs
-- supabase/schema.sql
+## Github'a yuklenecek dosyalar
 
-Important:
+- `frontend/src/components/Layout.jsx`
+- `frontend/src/components/MobileInstallPrompt.jsx`
+- `frontend/src/index.js`
+- `frontend/public/index.html`
+- `frontend/public/manifest.json`
+- `frontend/public/sw.js`
+- `frontend/public/pbm-icon.svg`
+- `frontend/public/pbm-icon-192.png`
+- `frontend/public/pbm-icon-512.png`
 
-- The frontend now calls /.netlify/functions/pbm directly, so stale /api redirects cannot keep serving the old function.
-- Education video create/delete now goes through the function instead of direct Supabase insert. This avoids the Response body stream already read error.
-- AI analysis no longer hard-requires SUPABASE_SERVICE_ROLE_KEY. It can use the public anon key plus the signed-in user token.
+## Deploy
 
-After upload:
+1. Bu dosyalari repoda ayni path'lere upload et.
+2. Commit mesaji: `Add mobile PWA menu`
+3. Netlify'da yeni deploy baslat.
+4. Mobilde siteyi ac, sag ustteki menu butonuna bas: menu alttan yukari animasyonlu acilir.
+5. Android Chrome'da install prompt gelirse `Add` ile ana ekrana eklenir. iPhone Safari'de Share menu icinden `Add to Home Screen` secilir.
 
-1. Run the Supabase SQL hotfix:
-   supabase_hotfix_ai_video_20260531/01_hotfix_ai_video.sql
-2. In Netlify, redeploy with Clear cache and deploy site.
-3. Open this URL after deploy to confirm the new function is live:
-   https://marketdesk62.netlify.app/.netlify/functions/pbm/health
-
-The health response must include:
-
-version: pbm-hotfix-20260531
+Supabase icin yeni SQL gerekmez.

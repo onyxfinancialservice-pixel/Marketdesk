@@ -305,6 +305,11 @@ create policy "own usage_events read"
   to authenticated
   using ((select auth.uid()) = user_id);
 
+create policy "own usage_events insert"
+  on public.usage_events for insert
+  to authenticated
+  with check ((select auth.uid()) = user_id);
+
 create policy "own watchlists"
   on public.watchlists for all
   to authenticated

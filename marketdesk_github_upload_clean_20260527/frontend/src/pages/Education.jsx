@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Play, Plus, Trash2 } from "lucide-react";
-import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/context/AuthContext";
 import { fmtDate } from "@/lib/format";
+import { addEducationVideo, deleteEducationVideo, listEducationVideos } from "@/lib/api";
 
 const YOUTUBE_ID_RE = /^[a-zA-Z0-9_-]{11}$/;
 
@@ -63,12 +63,13 @@ export default function EducationPage() {
   );
 
   const reload = async () => {
-    const { data } = await supabase
-      .from("education_videos")
-      .select("*")
-      .order("created_at", { ascending: false })
-      .limit(80);
-    setVideos(data || []);
+    try {
+      const data = await listEducationVideos();
+      setVideos(data || []);
+    } catch (loadError) {
+      setError(loadError.response?.data?.detail || loadError.message || "Videos could not be loaded.");
+      setVideos([]);
+    }
     setLoading(false);
   };
 
@@ -86,28 +87,31 @@ export default function EducationPage() {
     }
 
     setSaving(true);
-    const { error: insertError } = await supabase.from("education_videos").insert({
-      user_id: user.id,
-      author_email: user.email,
-      title: form.title.trim(),
-      video_url: form.video_url.trim(),
-      youtube_id: youtubeId,
-      thumbnail_url: thumbnailFor(youtubeId),
-    });
-
-    if (insertError) setError(insertError.message);
-    else {
+    try {
+      await addEducationVideo({
+        title: form.title.trim(),
+        video_url: form.video_url.trim(),
+        youtube_id: youtubeId,
+        thumbnail_url: thumbnailFor(youtubeId),
+      });
       setForm({ title: "", video_url: "" });
       await reload();
+    } catch (insertError) {
+      setError(insertError.response?.data?.detail || insertError.message || "Video could not be saved.");
+    } finally {
+      setSaving(false);
     }
-    setSaving(false);
   };
 
   const deleteVideo = async (video) => {
     if (!confirm("Delete this video?")) return;
-    await supabase.from("education_videos").delete().eq("id", video.id);
-    setVideos((items) => items.filter((item) => item.id !== video.id));
-    if (activeId === video.id) setActiveId(null);
+    try {
+      await deleteEducationVideo(video.id);
+      setVideos((items) => items.filter((item) => item.id !== video.id));
+      if (activeId === video.id) setActiveId(null);
+    } catch (deleteError) {
+      setError(deleteError.response?.data?.detail || deleteError.message || "Video could not be deleted.");
+    }
   };
 
   return (
